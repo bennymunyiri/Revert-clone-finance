@@ -1,19 +1,3 @@
-# Revert Lend audit details
-- Total Prize Pool: $88,500 in USDC
-  - HM awards: $42,900 in USDC
-  - Analysis awards: $2,600 in USDC
-  - QA awards: $1,300 in USDC
-  - Bot Race awards: $3,900 in USDC
-  - Gas awards: $1,300 in USDC
-  - Judge awards: $10,650 in USDC
-  - Lookout awards: $4,200 USDC 
-  - Scout awards: $500 in USDC
-  - Mitigation Review: $21,150 in USDC (*Opportunity goes to top 3 certified wardens based on placement in this audit.*)
-- Join [C4 Discord](https://discord.gg/code4rena) to register
-- Submit findings [using the C4 form](https://code4rena.com/contests/2024-03-revert-lend/submit)
-- [Read our guidelines for more details](https://docs.code4rena.com/roles/wardens)
-- Starts March 4, 2024 20:00 UTC
-- Ends March 15, 2024 20:00 UTC
 
 ## Automated Findings / Publicly Known Issues
 
