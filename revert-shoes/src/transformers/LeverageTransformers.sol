@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/utils/math/SafeCast.sol";
@@ -7,21 +7,16 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../utils/Swapper.sol";
 import "../interfaces/IVault.sol";
 
-/// @title LeverageTransformer
-/// @notice Functionality to leverage / deleverage positions direcly in one tx
 contract LeverageTransformer is Swapper {
     constructor(
-        INonfungiblePositionManager _nonfungiblePositionManager,
+        INonfungiblePositionManager _npm,
         address _zeroxRouter,
         address _universalRouter
-    ) Swapper(_nonfungiblePositionManager, _zeroxRouter, _universalRouter) {}
+    ) Swapper(_npm, _zeroxRouter, _universalRouter) {}
 
     struct LeverageUpParams {
-        // which token to leverage
         uint256 tokenId;
-        // how much to borrow
         uint256 borrowAmount;
-        // how much of borrowed lend token should be swapped to token0
         uint256 amountIn0;
         uint256 amountOut0Min;
         bytes swapData0; // encoded data from 0x api call (address,bytes) - allowanceTarget,data
@@ -38,17 +33,9 @@ contract LeverageTransformer is Swapper {
         uint256 deadline;
     }
 
-    // method called from transform() method in Vault
-    // notes leveraging up occurs by// calling borrow from the Ivault// swapping to the token we want to acquire and next we increase liquidity to position.
     function leverageUp(LeverageUpParams calldata params) external {
-        //  high no checks something must break
-        // get the amount we want to borrow
-
-        // @audit does not check if ration of collateral value to amount to be borrowed is broken
         uint256 amount = params.borrowAmount;
-        // address of the token to borrow
         address token = IVault(msg.sender).asset();
-        // we call borrow directly
         IVault(msg.sender).borrow(params.tokenId, amount);
 
         (
@@ -65,14 +52,8 @@ contract LeverageTransformer is Swapper {
             ,
 
         ) = nonfungiblePositionManager.positions(params.tokenId);
-        // which token are we borrowing is it token0 or token1  we fund that one with the amount and the other with 0 amount
         uint256 amount0 = token == token0 ? amount : 0;
         uint256 amount1 = token == token1 ? amount : 0;
-        // if (amount0 > 0){
-        //     token = token0;
-        // } else {
-        //     token = token1;
-        // }
 
         if (params.amountIn0 > 0) {
             (uint256 amountIn, uint256 amountOut) = _routerSwap(
@@ -84,9 +65,8 @@ contract LeverageTransformer is Swapper {
                     params.swapData0
                 )
             );
+
             if (token == token1) {
-                // what if this returns a negative number
-                // should have use amount1 = 0;
                 amount1 -= amountIn;
             }
             amount -= amountIn;
@@ -108,18 +88,16 @@ contract LeverageTransformer is Swapper {
             amount -= amountIn;
             amount1 += amountOut;
         }
-
         SafeERC20.safeIncreaseAllowance(
             IERC20(token0),
             address(nonfungiblePositionManager),
-            amount0
+            amount1
         );
         SafeERC20.safeIncreaseAllowance(
             IERC20(token1),
             address(nonfungiblePositionManager),
             amount1
         );
-
         INonfungiblePositionManager.IncreaseLiquidityParams
             memory increaseLiquidityParams = INonfungiblePositionManager
                 .IncreaseLiquidityParams(
@@ -132,9 +110,6 @@ contract LeverageTransformer is Swapper {
                 );
         (, uint256 added0, uint256 added1) = nonfungiblePositionManager
             .increaseLiquidity(increaseLiquidityParams);
-        // @audit-low you should emit an event
-
-        // send leftover tokens
         if (amount0 > added0) {
             SafeERC20.safeTransfer(
                 IERC20(token0),
@@ -149,7 +124,6 @@ contract LeverageTransformer is Swapper {
                 amount1 - added1
             );
         }
-        // @audit open gateway!!!
         if (token != token0 && token != token1 && amount > 0) {
             SafeERC20.safeTransfer(IERC20(token), params.recipient, amount);
         }
@@ -179,12 +153,7 @@ contract LeverageTransformer is Swapper {
         uint256 deadline;
     }
 
-    // method called from transform() method in Vault
-    // notes - leverage down occurs by returning the assets to maintain healthfactor.
-    // notes - we get the token using the Ivault interface
-    // notes - we call the decrease liquidity function through the interface
     function leverageDown(LeverageDownParams calldata params) external {
-        // @audit no checks something must break
         address token = IVault(msg.sender).asset();
         (
             ,
@@ -200,7 +169,6 @@ contract LeverageTransformer is Swapper {
             ,
 
         ) = nonfungiblePositionManager.positions(params.tokenId);
-
         uint256 amount0;
         uint256 amount1;
 
@@ -213,6 +181,7 @@ contract LeverageTransformer is Swapper {
                     params.amountRemoveMin1,
                     params.deadline
                 );
+
         (amount0, amount1) = nonfungiblePositionManager.decreaseLiquidity(
             decreaseLiquidityParams
         );
@@ -228,12 +197,11 @@ contract LeverageTransformer is Swapper {
                     ? type(uint128).max
                     : SafeCast.toUint128(amount1 + params.feeAmount1)
             );
-        (amount0, amount1) = nonfungiblePositionManager.collect(collectParams);
 
+        (amount0, amount1) = nonfungiblePositionManager.collect(collectParams);
         uint256 amount = token == token0
             ? amount0
             : (token == token1 ? amount1 : 0);
-
         if (params.amountIn0 > 0 && token != token0) {
             (uint256 amountIn, uint256 amountOut) = _routerSwap(
                 Swapper.RouterSwapParams(
@@ -260,12 +228,10 @@ contract LeverageTransformer is Swapper {
             amount1 -= amountIn;
             amount += amountOut;
         }
-        // q is there a way i can force weird ERC20 through here
-        // q should check if the token is in configured in uniswap V3!!
+
         SafeERC20.safeApprove(IERC20(token), msg.sender, amount);
         IVault(msg.sender).repay(params.tokenId, amount, false);
 
-        // send leftover tokens
         if (amount0 > 0 && token != token0) {
             SafeERC20.safeTransfer(IERC20(token0), params.recipient, amount0);
         }

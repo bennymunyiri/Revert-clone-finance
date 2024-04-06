@@ -9,7 +9,7 @@ import "../automators/Automator.sol";
 /// When executed a new position is created and automatically configured the same way as the original position
 /// When position is inside Vault - transform is called
 contract AutoRange is Automator {
-    //q does it change the token id
+    // does it change the token id
     event RangeChanged(uint256 indexed oldTokenId, uint256 indexed newTokenId);
     event PositionConfigured(
         uint256 indexed tokenId,
@@ -181,7 +181,7 @@ contract AutoRange is Automator {
         if (config.onlyFees) {
             state.protocolReward0 = (state.feeAmount0 * params.rewardX64) / Q64;
             state.protocolReward1 = (state.feeAmount1 * params.rewardX64) / Q64;
-            // @audit what if returns a negative number.
+            // written what if returns a negative number.
             state.amount0 -= state.protocolReward0;
             state.amount1 -= state.protocolReward1;
         }

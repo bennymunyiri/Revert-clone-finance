@@ -8,7 +8,7 @@ import "./Automator.sol";
 /// A revert controlled bot (operator) is responsable for the execution of optimized swaps (using external swap router)
 /// Positions need to be approved (approve or setApprovalForAll) for the contract and configured with configToken method
 contract AutoExit is Automator {
-    //@audit indexing should be used
+    //written indexing should be used
     event Executed(
         uint256 indexed tokenId,
         address account,
@@ -17,7 +17,7 @@ contract AutoExit is Automator {
         uint256 amountReturned1,
         address token0,
         address token1
-    ); //@audit indexing of token slippage and trigger
+    ); //@written indexing of token slippage and trigger
     event PositionConfigured(
         uint256 indexed tokenId,
         bool isActive,
@@ -68,8 +68,8 @@ contract AutoExit is Automator {
     }
 
     // configured tokens
-    //@audit-info use name mappings
-    //q is this the tokenId
+    //@written use name mappings
+    //qansewred is this the tokenId
     mapping(uint256 => PositionConfig) public positionConfigs;
 
     /// @notice params for execute()
@@ -152,7 +152,7 @@ contract AutoExit is Automator {
         if (state.liquidity == 0) {
             revert NoLiquidity();
         }
-        // q when can this be otherwise
+        // when can this be otherwise when liquidity is changed by owner
         if (state.liquidity != params.liquidity) {
             revert LiquidityChanged();
         }
@@ -163,12 +163,12 @@ contract AutoExit is Automator {
 
         // not triggered
 
-        //q why not move this up =>  becoz we need to get accont and stuff
+        // why not move this up =>  becoz we need to get accont and stuff
         if (
             // tick is 5
             // token0 tick = 2
             // token1 tick = 6
-            // @audit medium wrong use of signs in the tick as per the natspec.
+            // writtenmedium wrong use of signs in the tick as per the natspec.
             config.token0TriggerTick <= state.tick &&
             state.tick < config.token1TriggerTick
         ) {
@@ -197,26 +197,23 @@ contract AutoExit is Automator {
 
         // swap to other token
         if (state.isSwap) {
-            // if (params.swapData.length == 0) {
-            //     revert MissingSwapData();
-            // }
+            if (params.swapData.length == 0) {
+                revert MissingSwapData();
+            }
 
             // reward is taken before swap - if from fees only
             // notes we first collect fees
             if (config.onlyFees) {
-                // q why do we collect fees from both coins. -> we are calculating for both instances.
+                // why do we collect fees from both coins. -> we are calculating for both instances.
                 state.amount0 -= (state.feeAmount0 * params.rewardX64) / Q64;
                 state.amount1 -= (state.feeAmount1 * params.rewardX64) / Q64;
             }
-            //isswap is true onlyfees true
-            //amount0 1000 amount1 1000 feeamount0 100 feeamount1 100
-            //1000 - 150 = 750, 750
-            //swapAmount => 750
 
             state.swapAmount = state.isAbove ? state.amount1 : state.amount0;
 
             // checks if price in valid oracle range and calculates amountOutMin
             (state.amountOutMin, , , ) = _validateSwap(
+                // sk in discord
                 !state.isAbove,
                 state.swapAmount,
                 state.pool,
@@ -231,16 +228,15 @@ contract AutoExit is Automator {
                 Swapper.RouterSwapParams(
                     state.isAbove ? IERC20(state.token1) : IERC20(state.token0),
                     state.isAbove ? IERC20(state.token0) : IERC20(state.token1),
-                    state.swapAmount, //750
-                    state.amountOutMin, //650
+                    state.swapAmount,
+                    state.amountOutMin,
                     params.swapData
                 )
             );
             // isabove is true
             // amount0 => -1 + 2 = 1
             // amount1 => - 1 + 3 = 2
-            //q follow-up can this lead to someone earning more tokens later while autoexitting.
-            //650 +
+            // follow-up can this lead to someone earning more tokens later while autoexitting.
             state.amount0 = state.isAbove
                 ? state.amount0 + state.amountOutDelta
                 : state.amount0 - state.amountInDelta;
@@ -249,7 +245,7 @@ contract AutoExit is Automator {
                 : state.amount1 + state.amountOutDelta;
 
             // when swap and !onlyFees - protocol reward is removed only from target token (to incentivize optimal swap done by operator)
-            //@audit if this returns a negative number it will or lock funds
+
             if (!config.onlyFees) {
                 if (state.isAbove) {
                     state.amount0 -= (state.amount0 * params.rewardX64) / Q64;
@@ -259,8 +255,8 @@ contract AutoExit is Automator {
             }
         } else {
             // reward is taken as configured
-            // could mutliply directly feeamount * params.rewardx64;
-            // q what happens when  state.amount0  is a negative number
+            //@written could mutliply directly feeamount * params.rewardx64;
+            // answered what happens when  state.amount0  is a negative number it may never happen
             state.amount0 -=
                 ((config.onlyFees ? state.feeAmount0 : state.amount0) *
                     params.rewardX64) /
@@ -292,7 +288,7 @@ contract AutoExit is Automator {
         // delete config for position
         delete positionConfigs[params.tokenId];
 
-        //q is this necessary
+        //yes is this necessary because of tokenId
         emit PositionConfigured(
             params.tokenId,
             false,

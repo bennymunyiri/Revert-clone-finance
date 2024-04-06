@@ -1,34 +1,17 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Multicall.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "v3-periphery/interfaces/INonfungiblePositionManager.sol";
 
 import "../automators/Automator.sol";
 
-/// @title AutoCompound
-/// @notice Allows operator of AutoCompound contract (Revert controlled bot) to compound a position
-/// Positions need to be approved (approve or setApprovalForAll) for the contract when outside vault
-/// When position is inside Vault - owner needs to approve the position to be transformed by the contract
 contract AutoCompound is Automator, Multicall, ReentrancyGuard {
-    // autocompound event
-    event AutoCompounded(
-        address account,
-        uint256 tokenId,
-        uint256 amountAdded0,
-        uint256 amountAdded1,
-        uint256 reward0,
-        uint256 reward1,
-        address token0,
-        address token1
-    );
-
-    // config changes
-    event RewardUpdated(address account, uint64 totalRewardX64);
-
-    // balance movements
+    //////////////////////////////
+    // Events
+    //////////////////////////////
     event BalanceAdded(uint256 tokenId, address token, uint256 amount);
     event BalanceRemoved(uint256 tokenId, address token, uint256 amount);
     event BalanceWithdrawn(
@@ -38,8 +21,9 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         uint256 amount
     );
 
-    // @audit this would led to wrong info cause we passing 0 for universal router and 0 for routerx meaning we will not get correct info
-    // while swapping.
+    //////////////////////////////
+    // Constructor
+    //////////////////////////////
     constructor(
         INonfungiblePositionManager _npm,
         address _operator,
@@ -58,23 +42,26 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         )
     {}
 
-    // tokenid => ier20 => amount
+    //////////////////////////////
+    // Mappings
+    //////////////////////////////
     mapping(uint256 => mapping(address => uint256)) public positionBalances;
 
     uint64 public constant MAX_REWARD_X64 = uint64(Q64 / 50); // 2%
-    uint64 public totalRewardX64 = MAX_REWARD_X64; // 2%
+    uint64 public totalRewardX64 = MAX_REWARD_X64;
 
-    /// @notice params for execute()
+    //////////////////////////////
+    // Structs
+    //////////////////////////////
+    // cause i jus
     struct ExecuteParams {
-        // tokenid to autocompound
+        // account or tokenId to autocompound
         uint256 tokenId;
-        // swap direction - calculated off-chain
-        bool swap0To1;
-        // swap amount - calculated off-chain - if this is set to 0 no swap happens
+        // swap direction
+        bool swap0to1;
+        // swap amount calculated off-chain if this is set to 0 no swap happens
         uint256 amountIn;
     }
-
-    // state used during autocompound execution
     struct ExecuteState {
         uint256 amount0;
         uint256 amount1;
@@ -96,12 +83,9 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         uint256 amountOutDelta;
     }
 
-    /**
-     * @notice Adjust token (which is in a Vault) - via transform method
-     * Can only be called from configured operator account - vault must be configured as well
-     * Swap needs to be done with max price difference from current pool price - otherwise reverts
-     */
-    //is this function ever used ? => yes through the interface
+    //////////////////////////////
+    // External
+    //////////////////////////////
     function executeWithVault(
         ExecuteParams calldata params,
         address vault
@@ -116,18 +100,11 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         );
     }
 
-    /**
-     * @notice Adjust token directly (must be in correct state)
-     * Can only be called only from configured operator account, or vault via transform
-     * Swap needs to be done with max price difference from current pool price - otherwise reverts
-     */
     function execute(ExecuteParams calldata params) external nonReentrant {
         if (!operators[msg.sender] && !vaults[msg.sender]) {
             revert Unauthorized();
         }
         ExecuteState memory state;
-
-        // collect fees - if the position doesn't have operator set or is called from vault - it won't work
         (state.amount0, state.amount1) = nonfungiblePositionManager.collect(
             INonfungiblePositionManager.CollectParams(
                 params.tokenId,
@@ -136,8 +113,6 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
                 type(uint128).max
             )
         );
-
-        // get position info
         (
             ,
             ,
@@ -153,7 +128,6 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
 
         ) = nonfungiblePositionManager.positions(params.tokenId);
 
-        // add previous balances from given tokens
         state.amount0 =
             state.amount0 +
             positionBalances[params.tokenId][state.token0];
@@ -161,11 +135,10 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
             state.amount1 +
             positionBalances[params.tokenId][state.token1];
 
-        // only if there are balances to work with - start autocompounding process
+        // state autocompoundingBalances to work with - start autocompounding process
         if (state.amount0 > 0 || state.amount1 > 0) {
             uint256 amountIn = params.amountIn;
-            // is swapping necessary?0
-            // if a swap is requested - check TWAP oracle
+
             if (amountIn > 0) {
                 IUniswapV3Pool pool = _getPool(
                     state.token0,
@@ -173,9 +146,8 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
                     state.fee
                 );
                 (state.sqrtPriceX96, state.tick, , , , , ) = pool.slot0();
-
-                // how many seconds are needed for TWAP protection
                 uint32 tSecs = TWAPSeconds;
+
                 if (tSecs > 0) {
                     if (
                         !_hasMaxTWAPTickDifference(
@@ -185,63 +157,55 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
                             maxTWAPTickDifference
                         )
                     ) {
-                        // if there is no valid TWAP - disable swap
                         amountIn = 0;
                     }
                 }
-                // if still needed - do swap
                 if (amountIn > 0) {
-                    // no slippage check done - because protected by TWAP check
                     (state.amountInDelta, state.amountOutDelta) = _poolSwap(
                         Swapper.PoolSwapParams(
                             pool,
                             IERC20(state.token0),
                             IERC20(state.token1),
                             state.fee,
-                            params.swap0To1,
+                            params.swap0to1,
                             amountIn,
                             0
                         )
                     );
-                    state.amount0 = params.swap0To1
+                    state.amount0 = params.swap0to1
                         ? state.amount0 - state.amountInDelta
                         : state.amount0 + state.amountOutDelta;
-                    state.amount1 = params.swap0To1
+                    state.amount1 = params.swap0to1
                         ? state.amount1 + state.amountOutDelta
                         : state.amount1 - state.amountInDelta;
                 }
             }
-            // q is this the reward of the bot
             uint256 rewardX64 = totalRewardX64;
 
             state.maxAddAmount0 = (state.amount0 * Q64) / (rewardX64 + Q64);
             state.maxAddAmount1 = (state.amount1 * Q64) / (rewardX64 + Q64);
 
-            // deposit liquidity into tokenId
             if (state.maxAddAmount0 > 0 || state.maxAddAmount1 > 0) {
                 _checkApprovals(state.token0, state.token1);
-
-                (
-                    ,
-                    state.compounded0,
-                    state.compounded1
-                ) = nonfungiblePositionManager.increaseLiquidity(
-                    INonfungiblePositionManager.IncreaseLiquidityParams(
-                        params.tokenId,
-                        state.maxAddAmount0,
-                        state.maxAddAmount1,
-                        0,
-                        0,
-                        block.timestamp
-                    )
-                );
-
-                // fees are always calculated based on added amount (to incentivize optimal swap)
-                state.amount0Fees = (state.compounded0 * rewardX64) / Q64;
-                state.amount1Fees = (state.compounded1 * rewardX64) / Q64;
             }
+            (
+                ,
+                state.compounded0,
+                state.compounded1
+            ) = nonfungiblePositionManager.increaseLiquidity(
+                INonfungiblePositionManager.IncreaseLiquidityParams(
+                    params.tokenId,
+                    state.maxAddAmount0,
+                    state.maxAddAmount1,
+                    0,
+                    0,
+                    block.timestamp
+                )
+            );
 
-            // calculate remaining tokens for owner
+            state.amount0Fees = (state.compounded0 * rewardX64) / Q64;
+            state.amount1Fees = (state.compounded1 * rewardX64) / Q64;
+
             _setBalance(
                 params.tokenId,
                 state.token0,
@@ -253,29 +217,11 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
                 state.amount1 - state.compounded1 - state.amount1Fees
             );
 
-            // add reward to protocol balance (token 0)
-            // notes so protocol address is 0
             _increaseBalance(0, state.token0, state.amount0Fees);
             _increaseBalance(0, state.token1, state.amount1Fees);
         }
-
-        emit AutoCompounded(
-            msg.sender,
-            params.tokenId,
-            state.compounded0,
-            state.compounded1,
-            state.amount0Fees,
-            state.amount1Fees,
-            state.token0,
-            state.token1
-        );
     }
 
-    /**
-     * @notice Withdraws leftover token balance for a token
-     * @param tokenId Id of position to withdraw
-     * @param to Address to send to
-     */
     function withdrawLeftoverBalances(
         uint256 tokenId,
         address to
@@ -287,7 +233,6 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         if (owner != msg.sender) {
             revert Unauthorized();
         }
-
         (
             ,
             ,
@@ -302,7 +247,6 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
             ,
 
         ) = nonfungiblePositionManager.positions(tokenId);
-
         uint256 balance0 = positionBalances[tokenId][token0];
         if (balance0 > 0) {
             _withdrawBalanceInternal(tokenId, token0, to, balance0, balance0);
@@ -313,12 +257,6 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         }
     }
 
-    /**
-     * @notice Withdraws token balance (accumulated protocol fee)
-     * @dev The method is overriden, because it differs from standard automator fee handling
-     * @param tokens Addresses of tokens to withdraw
-     * @param to Address to send to
-     */
     function withdrawBalances(
         address[] calldata tokens,
         address to
@@ -326,6 +264,7 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         if (msg.sender != withdrawer) {
             revert Unauthorized();
         }
+
         uint256 i;
         uint256 count = tokens.length;
         for (; i < count; ++i) {
@@ -334,15 +273,11 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
         }
     }
 
-    /**
-     * @notice Management method to lower reward(onlyOwner)
-     * @param _totalRewardX64 new total reward (can't be higher than current total reward)
-     */
-    function setReward(uint64 _totalRewardX64) external onlyOwner {
-        require(_totalRewardX64 <= totalRewardX64, ">totalRewardX64");
-        totalRewardX64 = _totalRewardX64;
-        emit RewardUpdated(msg.sender, _totalRewardX64);
-    }
+    function setReward() external onlyOwner {}
+
+    //////////////////////////////
+    // Internal
+    //////////////////////////////
 
     function _increaseBalance(
         uint256 tokenId,
@@ -388,11 +323,11 @@ contract AutoCompound is Automator, Multicall, ReentrancyGuard {
     }
 
     function _checkApprovals(address token0, address token1) internal {
-        // approve tokens once if not yet approved - to save gas during compounds
         uint256 allowance0 = IERC20(token0).allowance(
             address(this),
             address(nonfungiblePositionManager)
         );
+
         if (allowance0 == 0) {
             SafeERC20.safeApprove(
                 IERC20(token0),

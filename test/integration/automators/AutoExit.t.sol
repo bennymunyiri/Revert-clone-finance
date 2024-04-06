@@ -2,16 +2,27 @@
 pragma solidity ^0.8.0;
 
 import "./AutomatorIntegrationTestBase.sol";
+import {console2} from "forge-std/console2.sol";
 
 import "../../../src/automators/AutoExit.sol";
 import "../../../src/interfaces/IErrors.sol";
+
+// import "@uniswap/v3-core/contracts/UniswapV3Pool.sol";
 
 contract AutoExitTest is AutomatorIntegrationTestBase {
     AutoExit autoExit;
 
     function setUp() external {
         _setupBase();
-        autoExit = new AutoExit(NPM, OPERATOR_ACCOUNT, WITHDRAWER_ACCOUNT, 60, 100, EX0x, UNIVERSAL_ROUTER);
+        autoExit = new AutoExit(
+            NPM,
+            OPERATOR_ACCOUNT,
+            WITHDRAWER_ACCOUNT,
+            60,
+            100,
+            EX0x,
+            UNIVERSAL_ROUTER
+        );
     }
 
     function _setConfig(
@@ -42,23 +53,134 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
     }
 
     function testNoLiquidity() external {
-        _setConfig(TEST_NFT, true, false, false, 0, 0, type(int24).min, type(int24).max, false);
+        _setConfig(TEST_NFT, true, false, false, 0, 0, 4, 4, false);
 
-        (,,,,,,, uint128 liquidity,,,,) = NPM.positions(TEST_NFT);
+        (, , , , , , , uint128 liquidity, , , , ) = NPM.positions(TEST_NFT);
 
         assertEq(liquidity, 0);
 
         vm.expectRevert(IErrors.NoLiquidity.selector);
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT, "", liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                "",
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
     }
 
-    function _addLiquidity() internal returns (uint256 amount0, uint256 amount1) {
+    function testExtraTokensGiventoUserWhen() external {
+        SwapRangesState memory state;
+
+        (state.amount0, state.amount1) = _addLiquidity();
+        console2.log("token 0", state.amount0);
+        console2.log("token 0", state.amount1);
+        // int24 tick = -276315;
+        (
+            ,
+            ,
+            state.token0,
+            state.token1,
+            state.fee,
+            state.tickLower,
+            state.tickUpper,
+            state.liquidity,
+            ,
+            ,
+            ,
+
+        ) = NPM.positions(TEST_NFT);
+
+        IUniswapV3Pool pool = IUniswapV3Pool(
+            PoolAddress.computeAddress(
+                FACTORY,
+                PoolAddress.PoolKey({
+                    token0: state.token0,
+                    token1: state.token1,
+                    fee: state.fee
+                })
+            )
+        );
+
+        (, int24 tick, , , , , ) = pool.slot0();
+
+        assertGt(state.liquidity, 0);
+        assertEq(state.tickLower, -276320);
+        assertEq(state.tickUpper, -276310);
+        assertEq(tick, -276315);
+
+        uint256 balanceBeforeOwner = DAI.balanceOf(TEST_NFT_ACCOUNT);
+        console.log("BalanceBeforeOwner", balanceBeforeOwner);
+
+        uint256 balanceBefore = DAI.balanceOf(address(this));
+        console.log("BalanceOf Dai Before", balanceBefore);
+        // // change to swa
+
+        // uint256 balanceAfterOwner = DAI.balanceOf(TEST_NFT_ACCOUNT);
+        // execute stop loss order - with swap
+        // uint256 swapBalanceBefore = USDC.balanceOf(TEST_NFT_ACCOUNT);
+        address[] memory addresses = new address[](2);
+        addresses[0] = address(DAI);
+        addresses[1] = address(USDC);
+        _setConfig(
+            TEST_NFT,
+            true,
+            true,
+            true,
+            uint64(Q64 / 100),
+            uint64(Q64 / 100),
+            -276324,
+            type(int24).max,
+            false
+        );
+        // tick = -276325;
+        vm.prank(OPERATOR_ACCOUNT);
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                _getDAIToUSDSwapData(),
+                state.liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
+        // uint256 swapBalanceAfter = USDC.balanceOf(TEST_NFT_ACCOUNT);
+
+        // // protocol fee
+        // balanceBefore = USDC.balanceOf(address(this));
+
+        // vm.prank(WITHDRAWER_ACCOUNT);
+        // autoExit.withdrawBalances(addresses, address(this));
+
+        // uint256 balanceAfter = USDC.balanceOf(address(this));
+
+        // assertEq(swapBalanceAfter - swapBalanceBefore, 991364);
+        // assertEq(balanceAfter - balanceBefore, 2484);
+    }
+
+    function _addLiquidity()
+        internal
+        returns (uint256 amount0, uint256 amount1)
+    {
         // add onesided liquidity
         vm.startPrank(TEST_NFT_ACCOUNT);
         DAI.approve(address(NPM), 1000000000000000000);
         (, amount0, amount1) = NPM.increaseLiquidity(
-            INonfungiblePositionManager.IncreaseLiquidityParams(TEST_NFT, 1000000000000000000, 0, 0, 0, block.timestamp)
+            INonfungiblePositionManager.IncreaseLiquidityParams(
+                TEST_NFT,
+                1000000000000000000,
+                0,
+                0,
+                0,
+                block.timestamp
+            )
         );
 
         assertEq(amount0, 999999999999999633);
@@ -83,16 +205,33 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
 
         (state.amount0, state.amount1) = _addLiquidity();
 
-        (,, state.token0, state.token1, state.fee, state.tickLower, state.tickUpper, state.liquidity,,,,) =
-            NPM.positions(TEST_NFT);
+        (
+            ,
+            ,
+            state.token0,
+            state.token1,
+            state.fee,
+            state.tickLower,
+            state.tickUpper,
+            state.liquidity,
+            ,
+            ,
+            ,
+
+        ) = NPM.positions(TEST_NFT);
 
         IUniswapV3Pool pool = IUniswapV3Pool(
             PoolAddress.computeAddress(
-                FACTORY, PoolAddress.PoolKey({token0: state.token0, token1: state.token1, fee: state.fee})
+                FACTORY,
+                PoolAddress.PoolKey({
+                    token0: state.token0,
+                    token1: state.token1,
+                    fee: state.fee
+                })
             )
         );
 
-        (, int24 tick,,,,,) = pool.slot0();
+        (, int24 tick, , , , , ) = pool.slot0();
 
         assertGt(state.liquidity, 0);
         assertEq(state.tickLower, -276320);
@@ -103,20 +242,60 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
         vm.prank(TEST_NFT_ACCOUNT);
         NPM.approve(address(autoExit), TEST_NFT);
 
-        _setConfig(TEST_NFT, true, false, false, 0, 0, -276325, type(int24).max, false);
+        _setConfig(
+            TEST_NFT,
+            true,
+            false,
+            false,
+            0,
+            0,
+            -276325,
+            type(int24).max,
+            false
+        );
         vm.expectRevert(IErrors.NotReady.selector);
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT, "", state.liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                "",
+                state.liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
 
         uint256 balanceBeforeOwner = DAI.balanceOf(TEST_NFT_ACCOUNT);
 
-        _setConfig(TEST_NFT, true, false, false, 0, 0, -276324, type(int24).max, false);
+        _setConfig(
+            TEST_NFT,
+            true,
+            false,
+            false,
+            0,
+            0,
+            -276324,
+            type(int24).max,
+            false
+        );
 
         // execute limit order - without swap
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT, "", state.liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                "",
+                state.liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
 
-        (,,,,,,, state.liquidity,,,,) = NPM.positions(TEST_NFT);
+        (, , , , , , , state.liquidity, , , , ) = NPM.positions(TEST_NFT);
         assertEq(state.liquidity, 0);
 
         uint256 balanceAfterOwner = DAI.balanceOf(TEST_NFT_ACCOUNT);
@@ -130,31 +309,76 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
         autoExit.withdrawBalances(addresses, address(this));
         uint256 balanceAfter = DAI.balanceOf(address(this));
 
-        assertEq(balanceAfterOwner + balanceAfter - balanceBeforeOwner - balanceBefore + 1, state.amount0); // +1 because Uniswap imprecision (remove same liquidity returns 1 less)
+        assertEq(
+            balanceAfterOwner +
+                balanceAfter -
+                balanceBeforeOwner -
+                balanceBefore +
+                1,
+            state.amount0
+        ); // +1 because Uniswap imprecision (remove same liquidity returns 1 less)
 
         // is not runnable anymore because configuration was removed
         vm.prank(OPERATOR_ACCOUNT);
         vm.expectRevert(IErrors.NotConfigured.selector);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT, "", state.liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                "",
+                state.liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
 
         // add new liquidity
         (state.amount0, state.amount1) = _addLiquidity();
-        (,,,,,,, state.liquidity,,,,) = NPM.positions(TEST_NFT);
+        (, , , , , , , state.liquidity, , , , ) = NPM.positions(TEST_NFT);
 
         // change to swap
-        _setConfig(TEST_NFT, true, true, true, uint64(Q64 / 100), uint64(Q64 / 100), -276324, type(int24).max, false);
+        _setConfig(
+            TEST_NFT,
+            true,
+            true,
+            true,
+            uint64(Q64 / 100),
+            uint64(Q64 / 100),
+            -276324,
+            type(int24).max,
+            false
+        );
 
         // execute without swap data fails because not allowed by config
         vm.expectRevert(IErrors.MissingSwapData.selector);
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT, "", state.liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                "",
+                state.liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
 
         // execute stop loss order - with swap
         uint256 swapBalanceBefore = USDC.balanceOf(TEST_NFT_ACCOUNT);
 
         vm.prank(OPERATOR_ACCOUNT);
         autoExit.execute(
-            AutoExit.ExecuteParams(TEST_NFT, _getDAIToUSDSwapData(), state.liquidity, 0, 0, block.timestamp, MAX_REWARD)
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                _getDAIToUSDSwapData(),
+                state.liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
         );
         uint256 swapBalanceAfter = USDC.balanceOf(TEST_NFT_ACCOUNT);
 
@@ -172,7 +396,11 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
 
     function testDirectSendNFT() external {
         vm.prank(TEST_NFT_ACCOUNT);
-        vm.expectRevert(abi.encodePacked("ERC721: transfer to non ERC721Receiver implementer")); // NFT manager doesnt resend original error for some reason
+        vm.expectRevert(
+            abi.encodePacked(
+                "ERC721: transfer to non ERC721Receiver implementer"
+            )
+        ); // NFT manager doesnt resend original error for some reason
         NPM.safeTransferFrom(TEST_NFT_ACCOUNT, address(autoExit), TEST_NFT);
     }
 
@@ -203,63 +431,175 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
     function testUnauthorizedSetConfig() external {
         vm.expectRevert(IErrors.Unauthorized.selector);
         vm.prank(TEST_NFT_ACCOUNT);
-        autoExit.configToken(TEST_NFT_2, AutoExit.PositionConfig(false, false, false, 0, 0, 0, 0, false, MAX_REWARD));
+        autoExit.configToken(
+            TEST_NFT_2,
+            AutoExit.PositionConfig(
+                false,
+                false,
+                false,
+                0,
+                0,
+                0,
+                0,
+                false,
+                MAX_REWARD
+            )
+        );
     }
 
     function testResetConfig() external {
         vm.prank(TEST_NFT_ACCOUNT);
-        autoExit.configToken(TEST_NFT, AutoExit.PositionConfig(false, false, false, 0, 0, 0, 0, false, MAX_REWARD));
+        autoExit.configToken(
+            TEST_NFT,
+            AutoExit.PositionConfig(
+                false,
+                false,
+                false,
+                0,
+                0,
+                0,
+                0,
+                false,
+                MAX_REWARD
+            )
+        );
     }
 
     function testInvalidConfig() external {
         vm.expectRevert(IErrors.InvalidConfig.selector);
         vm.prank(TEST_NFT_ACCOUNT);
         autoExit.configToken(
-            TEST_NFT, AutoExit.PositionConfig(true, false, false, 800000, -800000, 0, 0, false, MAX_REWARD)
+            TEST_NFT,
+            AutoExit.PositionConfig(
+                true,
+                false,
+                false,
+                800000,
+                -800000,
+                0,
+                0,
+                false,
+                MAX_REWARD
+            )
         );
     }
 
     function testValidSetConfig() external {
         vm.prank(TEST_NFT_ACCOUNT);
-        AutoExit.PositionConfig memory configIn =
-            AutoExit.PositionConfig(true, false, false, -800000, 800000, 0, 0, false, MAX_REWARD);
+        AutoExit.PositionConfig memory configIn = AutoExit.PositionConfig(
+            true,
+            false,
+            false,
+            -800000,
+            800000,
+            0,
+            0,
+            false,
+            MAX_REWARD
+        );
         autoExit.configToken(TEST_NFT, configIn);
-        (bool i1, bool i2, bool i3, int24 i4, int24 i5, uint64 i6, uint64 i7, bool i8, uint64 i9) =
-            autoExit.positionConfigs(TEST_NFT);
-        assertEq(abi.encode(configIn), abi.encode(AutoExit.PositionConfig(i1, i2, i3, i4, i5, i6, i7, i8, i9)));
+        (
+            bool i1,
+            bool i2,
+            bool i3,
+            int24 i4,
+            int24 i5,
+            uint64 i6,
+            uint64 i7,
+            bool i8,
+            uint64 i9
+        ) = autoExit.positionConfigs(TEST_NFT);
+        assertEq(
+            abi.encode(configIn),
+            abi.encode(
+                AutoExit.PositionConfig(i1, i2, i3, i4, i5, i6, i7, i8, i9)
+            )
+        );
     }
 
     function testNonOperator() external {
         vm.expectRevert(IErrors.Unauthorized.selector);
         vm.prank(TEST_NFT_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT, "", 0, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                "",
+                0,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
     }
 
     function testRunWithoutApprove() external {
         // out of range position
         vm.prank(TEST_NFT_2_ACCOUNT);
         autoExit.configToken(
-            TEST_NFT_2, AutoExit.PositionConfig(true, false, false, -84121, -78240, 0, 0, false, MAX_REWARD)
+            TEST_NFT_2,
+            AutoExit.PositionConfig(
+                true,
+                false,
+                false,
+                -84121,
+                -78240,
+                0,
+                0,
+                false,
+                MAX_REWARD
+            )
         );
 
-        (,,,,,,, uint128 liquidity,,,,) = NPM.positions(TEST_NFT_2);
+        (, , , , , , , uint128 liquidity, , , , ) = NPM.positions(TEST_NFT_2);
 
         // fails when sending NFT
         vm.expectRevert(abi.encodePacked("Not approved"));
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT_2, "", liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT_2,
+                "",
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
     }
 
     function testLiquidityChanged() external {
         vm.prank(TEST_NFT_2_ACCOUNT);
         autoExit.configToken(
-            TEST_NFT_2, AutoExit.PositionConfig(true, false, false, -84121, -78240, 0, 0, false, MAX_REWARD)
+            TEST_NFT_2,
+            AutoExit.PositionConfig(
+                true,
+                false,
+                false,
+                -84121,
+                -78240,
+                0,
+                0,
+                false,
+                MAX_REWARD
+            )
         );
 
         // fails when sending NFT
         vm.expectRevert(IErrors.LiquidityChanged.selector);
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT_2, "", 0, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT_2,
+                "",
+                0,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
     }
 
     function testRunWithoutConfig() external {
@@ -268,7 +608,17 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
 
         vm.expectRevert(IErrors.NotConfigured.selector);
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT, "", 0, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT,
+                "",
+                0,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
     }
 
     function testRunNotReady() external {
@@ -277,20 +627,49 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
 
         vm.prank(TEST_NFT_2_ACCOUNT);
         autoExit.configToken(
-            TEST_NFT_2_A, AutoExit.PositionConfig(true, false, false, -276331, -276320, 0, 0, false, MAX_REWARD)
+            TEST_NFT_2_A,
+            AutoExit.PositionConfig(
+                true,
+                false,
+                false,
+                -276331,
+                -276320,
+                0,
+                0,
+                false,
+                MAX_REWARD
+            )
         );
 
-        (,,,,,,, uint128 liquidity,,,,) = NPM.positions(TEST_NFT_2_A);
+        (, , , , , , , uint128 liquidity, , , , ) = NPM.positions(TEST_NFT_2_A);
 
         // in range position cant be run
         vm.expectRevert(IErrors.NotReady.selector);
         vm.prank(OPERATOR_ACCOUNT);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT_2_A, "", liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT_2_A,
+                "",
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
     }
 
     function testOracleCheck() external {
         // create range adjustor with more strict oracle config
-        autoExit = new AutoExit(NPM, OPERATOR_ACCOUNT, WITHDRAWER_ACCOUNT, 60 * 30, 4, EX0x, UNIVERSAL_ROUTER);
+        autoExit = new AutoExit(
+            NPM,
+            OPERATOR_ACCOUNT,
+            WITHDRAWER_ACCOUNT,
+            60 * 30,
+            4,
+            EX0x,
+            UNIVERSAL_ROUTER
+        );
 
         vm.prank(TEST_NFT_2_ACCOUNT);
         NPM.setApprovalForAll(address(autoExit), true);
@@ -299,17 +678,33 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
         autoExit.configToken(
             TEST_NFT_2,
             AutoExit.PositionConfig(
-                true, true, true, -84121, -78240, uint64(Q64 / 100), uint64(Q64 / 100), false, MAX_REWARD
+                true,
+                true,
+                true,
+                -84121,
+                -78240,
+                uint64(Q64 / 100),
+                uint64(Q64 / 100),
+                false,
+                MAX_REWARD
             )
         );
 
-        (,,,,,,, uint128 liquidity,,,,) = NPM.positions(TEST_NFT_2);
+        (, , , , , , , uint128 liquidity, , , , ) = NPM.positions(TEST_NFT_2);
 
         // TWAPCheckFailed
         vm.prank(OPERATOR_ACCOUNT);
         vm.expectRevert(IErrors.TWAPCheckFailed.selector);
         autoExit.execute(
-            AutoExit.ExecuteParams(TEST_NFT_2, _getWETHToDAISwapData(), liquidity, 0, 0, block.timestamp, MAX_REWARD)
+            AutoExit.ExecuteParams(
+                TEST_NFT_2,
+                _getWETHToDAISwapData(),
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
         );
     }
 
@@ -337,13 +732,15 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
             )
         ); // 1% max slippage
 
-        uint256 contractWETHBalanceBefore = WETH_ERC20.balanceOf(address(autoExit));
+        uint256 contractWETHBalanceBefore = WETH_ERC20.balanceOf(
+            address(autoExit)
+        );
         uint256 contractDAIBalanceBefore = DAI.balanceOf(address(autoExit));
 
         uint256 ownerDAIBalanceBefore = DAI.balanceOf(TEST_NFT_2_ACCOUNT);
         uint256 ownerWETHBalanceBefore = TEST_NFT_2_ACCOUNT.balance;
 
-        (,,,,,,, uint128 liquidity,,,,) = NPM.positions(TEST_NFT_2);
+        (, , , , , , , uint128 liquidity, , , , ) = NPM.positions(TEST_NFT_2);
 
         // test max withdraw slippage
         vm.prank(OPERATOR_ACCOUNT);
@@ -363,16 +760,32 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
         vm.prank(OPERATOR_ACCOUNT);
         autoExit.execute(
             AutoExit.ExecuteParams(
-                TEST_NFT_2, "", liquidity, 0, 0, block.timestamp, onlyFees ? MAX_FEE_REWARD : MAX_REWARD
+                TEST_NFT_2,
+                "",
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                onlyFees ? MAX_FEE_REWARD : MAX_REWARD
             )
         ); // max fee with 1% is 7124618988448545
 
-        (,,,,,,, liquidity,,,,) = NPM.positions(TEST_NFT_2);
+        (, , , , , , , liquidity, , , , ) = NPM.positions(TEST_NFT_2);
 
         // is not runnable anymore because configuration was removed
         vm.prank(OPERATOR_ACCOUNT);
         vm.expectRevert(IErrors.NotConfigured.selector);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT_2, "", liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT_2,
+                "",
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
 
         // fee stored for owner in contract (only WETH because WETH is target token)
         assertEq(
@@ -390,7 +803,8 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
             onlyFees ? 296093738943058795843 : 310898425890211735621
         ); // all available
         assertEq(
-            TEST_NFT_2_ACCOUNT.balance - ownerWETHBalanceBefore, onlyFees ? 501954614707533274 : 505635802905220511
+            TEST_NFT_2_ACCOUNT.balance - ownerWETHBalanceBefore,
+            onlyFees ? 501954614707533274 : 505635802905220511
         ); // all available
     }
 
@@ -406,69 +820,116 @@ contract AutoExitTest is AutomatorIntegrationTestBase {
         autoExit.configToken(
             TEST_NFT_2,
             AutoExit.PositionConfig(
-                true, true, true, -84121, -78240, uint64(Q64 / 100), uint64(Q64 / 100), false, MAX_REWARD
+                true,
+                true,
+                true,
+                -84121,
+                -78240,
+                uint64(Q64 / 100),
+                uint64(Q64 / 100),
+                false,
+                MAX_REWARD
             )
         ); // 1% max slippage
 
-        uint256 contractWETHBalanceBefore = WETH_ERC20.balanceOf(address(autoExit));
+        uint256 contractWETHBalanceBefore = WETH_ERC20.balanceOf(
+            address(autoExit)
+        );
         uint256 contractDAIBalanceBefore = DAI.balanceOf(address(autoExit));
 
         uint256 ownerDAIBalanceBefore = DAI.balanceOf(TEST_NFT_2_ACCOUNT);
         uint256 ownerWETHBalanceBefore = TEST_NFT_2_ACCOUNT.balance;
 
-        (,,,,,,, uint128 liquidity,,,,) = NPM.positions(TEST_NFT_2);
+        (, , , , , , , uint128 liquidity, , , , ) = NPM.positions(TEST_NFT_2);
 
         // is not runnable without swap
         vm.prank(OPERATOR_ACCOUNT);
         vm.expectRevert(IErrors.MissingSwapData.selector);
-        autoExit.execute(AutoExit.ExecuteParams(TEST_NFT_2, "", liquidity, 0, 0, block.timestamp, MAX_REWARD));
+        autoExit.execute(
+            AutoExit.ExecuteParams(
+                TEST_NFT_2,
+                "",
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
+        );
 
         vm.prank(OPERATOR_ACCOUNT);
         autoExit.execute(
-            AutoExit.ExecuteParams(TEST_NFT_2, _getWETHToDAISwapData(), liquidity, 0, 0, block.timestamp, MAX_REWARD)
+            AutoExit.ExecuteParams(
+                TEST_NFT_2,
+                _getWETHToDAISwapData(),
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
         );
 
-        (,,,,,,, liquidity,,,,) = NPM.positions(TEST_NFT_2);
+        (, , , , , , , liquidity, , , , ) = NPM.positions(TEST_NFT_2);
 
         // is not runnable anymore because configuration was removed
         vm.prank(OPERATOR_ACCOUNT);
         vm.expectRevert(IErrors.NotConfigured.selector);
         autoExit.execute(
-            AutoExit.ExecuteParams(TEST_NFT_2, _getWETHToDAISwapData(), liquidity, 0, 0, block.timestamp, MAX_REWARD)
+            AutoExit.ExecuteParams(
+                TEST_NFT_2,
+                _getWETHToDAISwapData(),
+                liquidity,
+                0,
+                0,
+                block.timestamp,
+                MAX_REWARD
+            )
         );
 
         // fee stored for owner in contract (because perfect swap all fees are grabbed from target token DAI)
-        assertEq(WETH_ERC20.balanceOf(address(autoExit)) - contractWETHBalanceBefore, 0);
-        assertEq(DAI.balanceOf(address(autoExit)) - contractDAIBalanceBefore, 2703387416905290365);
+        assertEq(
+            WETH_ERC20.balanceOf(address(autoExit)) - contractWETHBalanceBefore,
+            0
+        );
+        assertEq(
+            DAI.balanceOf(address(autoExit)) - contractDAIBalanceBefore,
+            2703387416905290365
+        );
 
         // leftovers returned to owner
-        assertEq(DAI.balanceOf(TEST_NFT_2_ACCOUNT) - ownerDAIBalanceBefore, 1078651579345210856838); // all available
+        assertEq(
+            DAI.balanceOf(TEST_NFT_2_ACCOUNT) - ownerDAIBalanceBefore,
+            1078651579345210856838
+        ); // all available
         assertEq(TEST_NFT_2_ACCOUNT.balance - ownerWETHBalanceBefore, 0); // all available
     }
 
     function _getWETHToDAISwapData() internal view returns (bytes memory) {
         // https://api.0x.org/swap/v1/quote?sellToken=WETH&buyToken=DAI&sellAmount=506903060556612041&slippagePercentage=0.25
-        return abi.encode(
-            EX0x,
+        return
             abi.encode(
-                Swapper.ZeroxRouterData(
-                    EX0x,
-                    hex"6af479b200000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000708e1a5dc0901c90000000000000000000000000000000000000000000000259f6c7a7e07497b8c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002bc02aaa39b223fe8d0a0e5c4f27ead9083c756cc20001f46b175474e89094c44da98b954eedeac495271d0f000000000000000000000000000000000000000000869584cd00000000000000000000000010000000000000000000000000000000000000110000000000000000000000000000000000000000000000c4cce18ee664276707"
+                EX0x,
+                abi.encode(
+                    Swapper.ZeroxRouterData(
+                        EX0x,
+                        hex"6af479b200000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000708e1a5dc0901c90000000000000000000000000000000000000000000000259f6c7a7e07497b8c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002bc02aaa39b223fe8d0a0e5c4f27ead9083c756cc20001f46b175474e89094c44da98b954eedeac495271d0f000000000000000000000000000000000000000000869584cd00000000000000000000000010000000000000000000000000000000000000110000000000000000000000000000000000000000000000c4cce18ee664276707"
+                    )
                 )
-            )
-        );
+            );
     }
 
     function _getDAIToUSDSwapData() internal view returns (bytes memory) {
         // https://api.0x.org/swap/v1/quote?sellToken=DAI&buyToken=USDC&sellAmount=999999999999999632&slippagePercentage=0.05
-        return abi.encode(
-            EX0x,
+        return
             abi.encode(
-                Swapper.ZeroxRouterData(
-                    EX0x,
-                    hex"d9627aa400000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000de0b6b3a763fe9000000000000000000000000000000000000000000000000000000000000e777d000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000006b175474e89094c44da98b954eedeac495271d0f000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48869584cd0000000000000000000000001000000000000000000000000000000000000011000000000000000000000000000000000000000000000045643479ef636e6e94"
+                EX0x,
+                abi.encode(
+                    Swapper.ZeroxRouterData(
+                        EX0x,
+                        hex"d9627aa400000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000de0b6b3a763fe9000000000000000000000000000000000000000000000000000000000000e777d000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000006b175474e89094c44da98b954eedeac495271d0f000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48869584cd0000000000000000000000001000000000000000000000000000000000000011000000000000000000000000000000000000000000000045643479ef636e6e94"
+                    )
                 )
-            )
-        );
+            );
     }
 }

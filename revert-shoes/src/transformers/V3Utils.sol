@@ -2,36 +2,27 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import "permit2/interfaces/IPermit2.sol";
 
 import "../utils/Swapper.sol";
 
-/// @title v3Utils v1.1
-/// @notice Utility functions for Uniswap V3 positions
-/// This is a completely ownerless/stateless contract - does not hold any ERC20 or NFTs.
-/// It can be simply redeployed when new / better functionality is implemented
 contract V3Utils is Swapper, IERC721Receiver {
-    using SafeCast for uint256;
-
-    // @notice Permit2 contract
     IPermit2 public immutable permit2;
 
-    // events
-    // q is this an event when we call autocompound
-    event CompoundFees(
+    event SwapAndIncreaseLiquidity(
         uint256 indexed tokenId,
         uint128 liquidity,
         uint256 amount0,
         uint256 amount1
     );
-    // q when we AutoRange
     event ChangeRange(uint256 indexed tokenId, uint256 newTokenId);
-    event WithdrawAndCollectAndSwap(
+    event CompoundFees(
         uint256 indexed tokenId,
-        address token,
-        uint256 amount
+        uint128 liquidity,
+        uint256 amount0,
+        uint256 amount1
     );
     event SwapAndMint(
         uint256 indexed tokenId,
@@ -39,35 +30,33 @@ contract V3Utils is Swapper, IERC721Receiver {
         uint256 amount0,
         uint256 amount1
     );
-    event SwapAndIncreaseLiquidity(
+    event WithdrawAndCollectAndSwap(
         uint256 indexed tokenId,
-        uint128 liquidity,
-        uint256 amount0,
-        uint256 amount1
+        address token,
+        uint256 amount
     );
 
-    /// @notice Constructor
-    /// @param _nonfungiblePositionManager Uniswap v3 position manager
-    /// @param _zeroxRouter 0x Exchange Proxy
     constructor(
-        INonfungiblePositionManager _nonfungiblePositionManager,
-        address _zeroxRouter,
+        INonfungiblePositionManager _npm,
+        address _zeroXRouter,
         address _universalRouter,
         address _permit2
-    ) Swapper(_nonfungiblePositionManager, _zeroxRouter, _universalRouter) {
+    ) Swapper(_npm, _zeroXRouter, _universalRouter) {
         permit2 = IPermit2(_permit2);
     }
 
-    /// @notice Action which should be executed on provided NFT
+    ////'////////////////////////////
+    // Enums
+    //////////////////////////////////
+
     enum WhatToDo {
-        // auto range
         CHANGE_RANGE,
-        // leverage
         WITHDRAW_AND_COLLECT_AND_SWAP,
         COMPOUND_FEES
     }
-
-    /// @notice Complete description of what should be executed on provided NFT - different fields are used depending on specified WhatToDo
+    ////'////////////////////////////
+    // Structs
+    //////////////////////////////////
     struct Instructions {
         // what action to perform on provided Uniswap v3 position
         WhatToDo whatToDo;
@@ -87,8 +76,8 @@ contract V3Utils is Swapper, IERC721Receiver {
         uint256 amountOut1Min;
         bytes swapData1; // encoded data from 0x api call (address,bytes) - allowanceTarget,data
         // collect fee amount for COMPOUND_FEES / CHANGE_RANGE / WITHDRAW_AND_COLLECT_AND_SWAP (if uint256(128).max - ALL)
-        uint128 feeAmount0;
-        uint128 feeAmount1;
+        uint256 feeAmount0;
+        uint256 feeAmount1;
         // for creating new positions with CHANGE_RANGE
         uint24 fee;
         int24 tickLower;
@@ -113,20 +102,13 @@ contract V3Utils is Swapper, IERC721Receiver {
         bytes swapAndMintReturnData;
     }
 
-    /// @notice Execute instruction with EIP712 permit
-    /// @param tokenId Token to process
-    /// @param instructions Instructions to execute
-    /// @param v Signature values for EIP712 permit
-    /// @param r Signature values for EIP712 permit
-    /// @param s Signature values for EIP712 permit
     function executeWithPermit(
         uint256 tokenId,
         Instructions memory instructions,
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) public returns (uint256 newTokenId) {
-        // does this mean anyone who has not transferred his token as collateral can call this function.
+    ) public returns (uint256 newTokenID) {
         if (nonfungiblePositionManager.ownerOf(tokenId) != msg.sender) {
             revert Unauthorized();
         }
@@ -140,13 +122,8 @@ contract V3Utils is Swapper, IERC721Receiver {
             s
         );
         return execute(tokenId, instructions);
-
-        // NOTE: previous operator can not be reset as operator set by permit can not change operator - so this operator will stay until reset
     }
 
-    /// @notice Execute instruction by pulling approved NFT instead of direct safeTransferFrom call from owner
-    /// @param tokenId Token to process
-    /// @param instructions Instructions to execute
     function execute(
         uint256 tokenId,
         Instructions memory instructions
@@ -168,6 +145,7 @@ contract V3Utils is Swapper, IERC721Receiver {
 
         uint256 amount0;
         uint256 amount1;
+
         if (instructions.liquidity != 0) {
             (amount0, amount1) = _decreaseLiquidity(
                 tokenId,
@@ -177,19 +155,19 @@ contract V3Utils is Swapper, IERC721Receiver {
                 instructions.amountRemoveMin1
             );
         }
-        (amount0, amount1) = _collectFees(
-            tokenId,
-            IERC20(token0),
-            IERC20(token1),
-            instructions.feeAmount0 == type(uint128).max // q if amount is greater than uint128 this will revert leading to locked funds
-                ? type(uint128).max
-                : (amount0 + instructions.feeAmount0).toUint128(),
-            instructions.feeAmount1 == type(uint128).max
-                ? type(uint128).max
-                : (amount1 + instructions.feeAmount1).toUint128()
-        );
 
-        // check if enough tokens are available for swaps
+        // (amount0, amount1) = _collectFees(
+        //     tokenId,
+        //     IERC20(token0),
+        //     IERC20(token1),
+        //     instructions.feeAmount0 == type(uint128).max // q if amount is greater than uint128 this will revert leading to locked funds
+        //         ? type(uint128).max
+        //         : (amount0 + instructions.feeAmount0).toUint128(),
+        //     instructions.feeAmount1 == type(uint128).max
+        //         ? type(uint128).max
+        //         : (amount1 + instructions.feeAmount1).toUint128()
+        // );
+
         if (
             amount0 < instructions.amountIn0 || amount1 < instructions.amountIn1
         ) {
@@ -197,7 +175,6 @@ contract V3Utils is Swapper, IERC721Receiver {
         }
 
         if (instructions.whatToDo == WhatToDo.COMPOUND_FEES) {
-            // we swap first if token 0 we swap to
             if (instructions.targetToken == token0) {
                 (liquidity, amount0, amount1) = _swapAndIncrease(
                     SwapAndIncreaseLiquidityParams(
@@ -206,10 +183,10 @@ contract V3Utils is Swapper, IERC721Receiver {
                         amount1,
                         instructions.recipient,
                         instructions.deadline,
-                        IERC20(token1),
-                        instructions.amountIn1,
-                        instructions.amountOut1Min,
-                        instructions.swapData1,
+                        IERC20(address(0)),
+                        0,
+                        0,
+                        "",
                         0,
                         0,
                         "",
@@ -245,7 +222,6 @@ contract V3Utils is Swapper, IERC721Receiver {
                     instructions.unwrap
                 );
             } else {
-                // no swap is done here
                 (liquidity, amount0, amount1) = _swapAndIncrease(
                     SwapAndIncreaseLiquidityParams(
                         tokenId,
@@ -354,22 +330,14 @@ contract V3Utils is Swapper, IERC721Receiver {
                     instructions.unwrap
                 );
             }
-            // q what happens to the previous tokenId??
             emit ChangeRange(tokenId, newTokenId);
         } else if (
-            // written high recieves double the input.
             instructions.whatToDo == WhatToDo.WITHDRAW_AND_COLLECT_AND_SWAP
         ) {
             uint256 targetAmount;
-            // token0 = wbtc
-            // token1 = weth
-            // target = wld
-
-            // wbtc != wld
             if (token0 != instructions.targetToken) {
                 (uint256 amountInDelta, uint256 amountOutDelta) = _routerSwap(
                     Swapper.RouterSwapParams(
-                        // wbtc => wld
                         IERC20(token0),
                         IERC20(instructions.targetToken),
                         amount0,
@@ -377,7 +345,6 @@ contract V3Utils is Swapper, IERC721Receiver {
                         instructions.swapData0
                     )
                 );
-                // 10 < 12
                 if (amountInDelta < amount0) {
                     _transferToken(
                         instructions.recipient,
@@ -388,10 +355,8 @@ contract V3Utils is Swapper, IERC721Receiver {
                 }
                 targetAmount += amountOutDelta;
             } else {
-                // 10 wld.
                 targetAmount += amount0;
             }
-            // weth != wld
             if (token1 != instructions.targetToken) {
                 (uint256 amountInDelta, uint256 amountOutDelta) = _routerSwap(
                     Swapper.RouterSwapParams(
@@ -415,16 +380,18 @@ contract V3Utils is Swapper, IERC721Receiver {
                 targetAmount += amount1;
             }
 
-            // send complete target amount
             if (targetAmount != 0 && instructions.targetToken != address(0)) {
-                _transferToken(
-                    instructions.recipient,
-                    IERC20(instructions.targetToken),
-                    targetAmount,
-                    instructions.unwrap
-                );
+                if (
+                    targetAmount != 0 && instructions.targetToken != address(0)
+                ) {
+                    _transferToken(
+                        instructions.recipient,
+                        IERC20(instructions.targetToken),
+                        targetAmount,
+                        instructions.unwrap
+                    );
+                }
             }
-
             emit WithdrawAndCollectAndSwap(
                 tokenId,
                 instructions.targetToken,
@@ -435,129 +402,31 @@ contract V3Utils is Swapper, IERC721Receiver {
         }
     }
 
-    /// @notice ERC721 callback function. Called on safeTransferFrom and does manipulation as configured in encoded Instructions parameter.
-    /// At the end the NFT (and any newly minted NFT) is returned to sender. The leftover tokens are sent to instructions.recipient.
-    function onERC721Received(
-        address,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external override returns (bytes4) {
-        // only Uniswap v3 NFTs allowed
-        if (msg.sender != address(nonfungiblePositionManager)) {
-            revert WrongContract();
-        }
-
-        // not allowed to send to itself
-        if (from == address(this)) {
-            revert SelfSend();
-        }
-
-        Instructions memory instructions = abi.decode(data, (Instructions));
-
-        execute(tokenId, instructions);
-
-        // return token to owner (this line guarantees that token is returned to originating owner)
-        nonfungiblePositionManager.safeTransferFrom(
-            address(this),
-            from,
-            tokenId,
-            instructions.returnData
-        );
-
-        return IERC721Receiver.onERC721Received.selector;
+    struct SwapAndIncreaseLiquidityParams {
+        uint256 tokenId;
+        // how much is provided of token0 and token1
+        uint256 amount0;
+        uint256 amount1;
+        address recipient; // recipient of leftover tokens
+        uint256 deadline;
+        // source token for swaps (maybe either address(0), token0, token1 or another token)
+        // if swapSourceToken is another token than token0 or token1 -> amountIn0 + amountIn1 of swapSourceToken are expected to be available
+        IERC20 swapSourceToken;
+        // if swapSourceToken needs to be swapped to token0 - set values
+        uint256 amountIn0;
+        uint256 amountOut0Min;
+        bytes swapData0;
+        // if swapSourceToken needs to be swapped to token1 - set values
+        uint256 amountIn1;
+        uint256 amountOut1Min;
+        bytes swapData1;
+        // min amount to be added after swap
+        uint256 amountAddMin0;
+        uint256 amountAddMin1;
+        // if permit2 signatures are used - set this
+        bytes permitData;
     }
 
-    /// @notice Params for swap() function
-    struct SwapParams {
-        IERC20 tokenIn;
-        IERC20 tokenOut;
-        uint256 amountIn;
-        uint256 minAmountOut;
-        address recipient; // recipient of tokenOut and leftover tokenIn (if any leftover)
-        bytes swapData;
-        bool unwrap; // if tokenIn or tokenOut is WETH - unwrap
-        bytes permitData; // if permit2 signatures are used - set this
-    }
-
-    /// @notice Swaps amountIn of tokenIn for tokenOut - returning at least minAmountOut
-    /// @param params Swap configuration
-    /// If tokenIn is wrapped native token - both the token or the wrapped token can be sent (the sum of both must be equal to amountIn)
-    /// Optionally unwraps any wrapped native token and returns native token instead
-    // q this code doesnot interact with liquidity providiers is it necessary
-    //
-    function swap(
-        SwapParams calldata params
-    ) external payable returns (uint256 amountOut) {
-        if (params.tokenIn == params.tokenOut) {
-            revert SameToken();
-        }
-
-        if (params.permitData.length > 0) {
-            (
-                ISignatureTransfer.PermitBatchTransferFrom memory pbtf,
-                bytes memory signature
-            ) = abi.decode(
-                    params.permitData,
-                    (ISignatureTransfer.PermitBatchTransferFrom, bytes)
-                );
-            _prepareAddPermit2(
-                params.tokenIn,
-                // should this not be
-                //params.tokenout
-                IERC20(address(0)),
-                IERC20(address(0)),
-                params.amountIn,
-                0,
-                0,
-                pbtf,
-                signature
-            );
-        } else {
-            _prepareAddApproved(
-                params.tokenIn,
-                IERC20(address(0)),
-                IERC20(address(0)),
-                params.amountIn,
-                0,
-                0
-            );
-        }
-
-        uint256 amountInDelta;
-        (amountInDelta, amountOut) = _routerSwap(
-            Swapper.RouterSwapParams(
-                params.tokenIn,
-                params.tokenOut,
-                params.amountIn,
-                params.minAmountOut,
-                params.swapData
-            )
-        );
-
-        // send swapped amount of tokenOut
-        if (amountOut != 0) {
-            _transferToken(
-                params.recipient,
-                params.tokenOut,
-                amountOut,
-                params.unwrap
-            );
-        }
-
-        // if not all was swapped - return leftovers of tokenIn
-        uint256 leftOver = params.amountIn - amountInDelta;
-        if (leftOver != 0) {
-            _transferToken(
-                params.recipient,
-                params.tokenIn,
-                leftOver,
-                params.unwrap
-            );
-        }
-    }
-
-    /// @notice Params for swapAndMint() function
     struct SwapAndMintParams {
         IERC20 token0;
         IERC20 token1;
@@ -590,190 +459,88 @@ contract V3Utils is Swapper, IERC721Receiver {
         bytes permitData;
     }
 
-    /// @notice Does 1 or 2 swaps from swapSourceToken to token0 and token1 and adds as much as possible liquidity to a newly minted position.
-    /// @param params Swap and mint configuration
-    /// Newly minted NFT and leftover tokens are returned to recipient
-    function swapAndMint(
-        SwapAndMintParams calldata params
-    )
+    function onERC721Received(
+        address,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external override returns (bytes4) {
+        if (msg.sender != address(nonfungiblePositionManager)) {
+            revert WrongContract();
+        }
+
+        if (from == address(this)) {
+            revert SelfSend();
+        }
+        Instructions memory instructions = abi.decode(data, (Instructions));
+        execute(tokenId, instructions);
+
+        nonfungiblePositionManager.safeTransferFrom(
+            address(this),
+            from,
+            tokenId,
+            instructions.returnData
+        );
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
+    ///
+    struct SwapParams {
+        IERC20 tokenIn;
+        IERC20 tokenOut;
+        uint256 amountIn;
+        uint256 minAmountOut;
+        address recipient;
+        bytes swapData;
+        bool unwrap;
+        bytes permitData;
+    }
+
+    function swap(
+        SwapParams calldata params
+    ) external payable returns (uint256 amountOut) {
+        if (params.tokenIn == params.tokenOut) {
+            revert SameToken();
+        }
+        if (params.permitData.length > 0) {
+            (
+                ISignatureTransfer.PermitBatchTransferFrom memory pbtf,
+                bytes memory signature
+            ) = abi.decode(
+                    params.permitData,
+                    (ISignatureTransfer.PermitBatchTransferFrom, bytes)
+                );
+            _prepareAddPermit2(
+                params.tokenIn,
+                IERC20(address(0)),
+                IERC20(address(0)),
+                params.amountIn,
+                0,
+                0,
+                pbtf,
+                signature
+            );
+        }
+    }
+
+    function swapAndMint()
         external
         payable
         returns (
             uint256 tokenId,
             uint128 liquidity,
             uint256 amount0,
-            uint256 amount1
+            uint256 amount
         )
-    {
-        if (params.token0 == params.token1) {
-            revert SameToken();
-        }
+    {}
 
-        if (params.permitData.length > 0) {
-            (
-                ISignatureTransfer.PermitBatchTransferFrom memory pbtf,
-                bytes memory signature
-            ) = abi.decode(
-                    params.permitData,
-                    (ISignatureTransfer.PermitBatchTransferFrom, bytes)
-                );
-            _prepareAddPermit2(
-                params.token0,
-                params.token1,
-                params.swapSourceToken,
-                params.amount0,
-                params.amount1,
-                params.amountIn0 + params.amountIn1,
-                pbtf,
-                signature
-            );
-        } else {
-            _prepareAddApproved(
-                params.token0,
-                params.token1,
-                params.swapSourceToken,
-                params.amount0,
-                params.amount1,
-                params.amountIn0 + params.amountIn1
-            );
-        }
-
-        (tokenId, liquidity, amount0, amount1) = _swapAndMint(
-            params,
-            msg.value != 0
-        );
-    }
-
-    /// @notice Params for swapAndIncreaseLiquidity() function
-    struct SwapAndIncreaseLiquidityParams {
-        uint256 tokenId;
-        // how much is provided of token0 and token1
-        uint256 amount0;
-        uint256 amount1;
-        address recipient; // recipient of leftover tokens
-        uint256 deadline;
-        // source token for swaps (maybe either address(0), token0, token1 or another token)
-        // if swapSourceToken is another token than token0 or token1 -> amountIn0 + amountIn1 of swapSourceToken are expected to be available
-        IERC20 swapSourceToken;
-        // if swapSourceToken needs to be swapped to token0 - set values
-        uint256 amountIn0;
-        uint256 amountOut0Min;
-        bytes swapData0;
-        // if swapSourceToken needs to be swapped to token1 - set values
-        uint256 amountIn1;
-        uint256 amountOut1Min;
-        bytes swapData1;
-        // min amount to be added after swap
-        uint256 amountAddMin0;
-        uint256 amountAddMin1;
-        // if permit2 signatures are used - set this
-        bytes permitData;
-    }
-
-    /// @notice Does 1 or 2 swaps from swapSourceToken to token0 and token1 and adds as much as possible liquidity to any existing position (no need to be position owner).
-    /// @param params Swap and increase liquidity configuration
-    // Sends any leftover tokens to recipient.
-    function swapAndIncreaseLiquidity(
-        SwapAndIncreaseLiquidityParams calldata params
-    )
+    function swapAndIncreaseLiquidity()
         external
         payable
         returns (uint128 liquidity, uint256 amount0, uint256 amount1)
-    {
-        (
-            ,
-            ,
-            address token0,
-            address token1,
-            ,
-            ,
-            ,
-            ,
-            ,
-            ,
-            ,
+    {}
 
-        ) = nonfungiblePositionManager.positions(params.tokenId);
-
-        if (params.permitData.length > 0) {
-            (
-                ISignatureTransfer.PermitBatchTransferFrom memory pbtf,
-                bytes memory signature
-            ) = abi.decode(
-                    params.permitData,
-                    (ISignatureTransfer.PermitBatchTransferFrom, bytes)
-                );
-            _prepareAddPermit2(
-                IERC20(token0),
-                IERC20(token1),
-                params.swapSourceToken,
-                params.amount0,
-                params.amount1,
-                params.amountIn0 + params.amountIn1,
-                pbtf,
-                signature
-            );
-        } else {
-            _prepareAddApproved(
-                IERC20(token0),
-                IERC20(token1),
-                params.swapSourceToken,
-                params.amount0,
-                params.amount1,
-                params.amountIn0 + params.amountIn1
-            );
-        }
-
-        (liquidity, amount0, amount1) = _swapAndIncrease(
-            params,
-            IERC20(token0),
-            IERC20(token1),
-            msg.value != 0
-        );
-    }
-
-    function _prepareAddApproved(
-        IERC20 token0,
-        IERC20 token1,
-        IERC20 otherToken,
-        uint256 amount0,
-        uint256 amount1,
-        uint256 amountOther
-    ) internal {
-        (uint256 needed0, uint256 needed1, uint256 neededOther) = _prepareAdd(
-            token0,
-            token1,
-            otherToken,
-            amount0,
-            amount1,
-            amountOther
-        );
-
-        if (needed0 > 0) {
-            SafeERC20.safeTransferFrom(
-                token0,
-                msg.sender,
-                address(this),
-                needed0
-            );
-        }
-        if (needed1 > 0) {
-            SafeERC20.safeTransferFrom(
-                token1,
-                msg.sender,
-                address(this),
-                needed1
-            );
-        }
-        if (neededOther > 0) {
-            SafeERC20.safeTransferFrom(
-                otherToken,
-                msg.sender,
-                address(this),
-                neededOther
-            );
-        }
-    }
+    function _prepareAddApproved() internal {}
 
     struct PrepareAddPermit2State {
         uint256 needed0;
@@ -782,7 +549,7 @@ contract V3Utils is Swapper, IERC721Receiver {
         uint256 i;
         uint256 balanceBefore0;
         uint256 balanceBefore1;
-        uint256 balanceBeforeOther;
+        uint256 balanceBeforOther;
     }
 
     function _prepareAddPermit2(
@@ -805,67 +572,8 @@ contract V3Utils is Swapper, IERC721Receiver {
             amount1,
             amountOther
         );
-
-        ISignatureTransfer.SignatureTransferDetails[]
-            memory transferDetails = new ISignatureTransfer.SignatureTransferDetails[](
-                permit.permitted.length
-            );
-
-        // permitted tokens must be in this same order
-        if (state.needed0 > 0) {
-            state.balanceBefore0 = token0.balanceOf(address(this));
-            transferDetails[state.i++] = ISignatureTransfer
-                .SignatureTransferDetails(address(this), state.needed0);
-        }
-        if (state.needed1 > 0) {
-            state.balanceBefore1 = token1.balanceOf(address(this));
-            transferDetails[state.i++] = ISignatureTransfer
-                .SignatureTransferDetails(address(this), state.needed1);
-        }
-        if (state.neededOther > 0) {
-            state.balanceBeforeOther = otherToken.balanceOf(address(this));
-            transferDetails[state.i++] = ISignatureTransfer
-                .SignatureTransferDetails(address(this), state.neededOther);
-        }
-
-        // execute batch transfer
-        permit2.permitTransferFrom(
-            permit,
-            transferDetails,
-            msg.sender,
-            signature
-        );
-
-        // check if recieved correct amount of tokens
-        if (state.needed0 > 0) {
-            if (
-                token0.balanceOf(address(this)) - state.balanceBefore0 !=
-                state.needed0
-            ) {
-                revert TransferError(); // reverts for fee-on-transfer tokens
-            }
-        }
-        if (state.needed1 > 0) {
-            if (
-                token1.balanceOf(address(this)) - state.balanceBefore1 !=
-                state.needed1
-            ) {
-                revert TransferError(); // reverts for fee-on-transfer tokens
-            }
-        }
-        if (state.neededOther > 0) {
-            if (
-                otherToken.balanceOf(address(this)) -
-                    state.balanceBeforeOther !=
-                state.neededOther
-            ) {
-                revert TransferError(); // reverts for fee-on-transfer tokens
-            }
-        }
     }
 
-    // checks if required amounts are provided and are exact - wraps any provided ETH as WETH
-    // if less or more provided reverts
     function _prepareAdd(
         IERC20 token0,
         IERC20 token1,
@@ -874,52 +582,11 @@ contract V3Utils is Swapper, IERC721Receiver {
         uint256 amount1,
         uint256 amountOther
     ) internal returns (uint256 needed0, uint256 needed1, uint256 neededOther) {
-        uint256 amountAdded0;
-        uint256 amountAdded1;
-        uint256 amountAddedOther;
-
-        // wrap ether sent
         if (msg.value != 0) {
             weth.deposit{value: msg.value}();
-
-            if (address(weth) == address(token0)) {
-                amountAdded0 = msg.value;
-                if (amountAdded0 > amount0) {
-                    revert TooMuchEtherSent();
-                }
-            } else if (address(weth) == address(token1)) {
-                amountAdded1 = msg.value;
-                if (amountAdded1 > amount1) {
-                    revert TooMuchEtherSent();
-                }
-            } else if (address(weth) == address(otherToken)) {
-                amountAddedOther = msg.value;
-                if (amountAddedOther > amountOther) {
-                    revert TooMuchEtherSent();
-                }
-            } else {
-                revert NoEtherToken();
-            }
-        }
-
-        // calculate missing token amounts
-        if (amount0 > amountAdded0) {
-            needed0 = amount0 - amountAdded0;
-        }
-        if (amount1 > amountAdded1) {
-            needed1 = amount1 - amountAdded1;
-        }
-        if (
-            amountOther > amountAddedOther &&
-            address(otherToken) != address(0) &&
-            token0 != otherToken &&
-            token1 != otherToken
-        ) {
-            neededOther = amountOther - amountAddedOther;
         }
     }
 
-    // swap and mint logic
     function _swapAndMint(
         SwapAndMintParams memory params,
         bool unwrap
@@ -937,8 +604,8 @@ contract V3Utils is Swapper, IERC721Receiver {
             unwrap
         );
 
-        INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager
-            .MintParams(
+        INonfungiblePositionManager.MintParams
+            memory mintParams = INonfungiblePositionManager.MintParams(
                 address(params.token0),
                 address(params.token1),
                 params.fee,
@@ -948,11 +615,9 @@ contract V3Utils is Swapper, IERC721Receiver {
                 total1,
                 params.amountAddMin0,
                 params.amountAddMin1,
-                address(this), // is sent to real recipient aftwards
+                address(this),
                 params.deadline
             );
-
-        // mint is done to address(this) because it is not a safemint and safeTransferFrom needs to be done manually afterwards
         (tokenId, liquidity, added0, added1) = nonfungiblePositionManager.mint(
             mintParams
         );
@@ -964,20 +629,8 @@ contract V3Utils is Swapper, IERC721Receiver {
         );
 
         emit SwapAndMint(tokenId, liquidity, added0, added1);
-
-        _returnLeftoverTokens(
-            params.recipient,
-            params.token0,
-            params.token1,
-            total0,
-            total1,
-            added0,
-            added1,
-            unwrap
-        );
     }
 
-    // swap and increase logic
     function _swapAndIncrease(
         SwapAndIncreaseLiquidityParams memory params,
         IERC20 token0,
@@ -1010,7 +663,6 @@ contract V3Utils is Swapper, IERC721Receiver {
             ),
             unwrap
         );
-
         INonfungiblePositionManager.IncreaseLiquidityParams
             memory increaseLiquidityParams = INonfungiblePositionManager
                 .IncreaseLiquidityParams(
@@ -1021,7 +673,6 @@ contract V3Utils is Swapper, IERC721Receiver {
                     params.amountAddMin1,
                     params.deadline
                 );
-
         (liquidity, added0, added1) = nonfungiblePositionManager
             .increaseLiquidity(increaseLiquidityParams);
 
@@ -1031,20 +682,8 @@ contract V3Utils is Swapper, IERC721Receiver {
             added0,
             added1
         );
-
-        _returnLeftoverTokens(
-            params.recipient,
-            token0,
-            token1,
-            total0,
-            total1,
-            added0,
-            added1,
-            unwrap
-        );
     }
 
-    // swaps available tokens and prepares max amounts to be added to nonfungiblePositionManager
     function _swapAndPrepareAmounts(
         SwapAndMintParams memory params,
         bool unwrap
@@ -1146,7 +785,6 @@ contract V3Utils is Swapper, IERC721Receiver {
         }
     }
 
-    // returns leftover token balances
     function _returnLeftoverTokens(
         address to,
         IERC20 token0,
@@ -1169,7 +807,6 @@ contract V3Utils is Swapper, IERC721Receiver {
         }
     }
 
-    // transfers token (or unwraps WETH and sends ETH)
     function _transferToken(
         address to,
         IERC20 token,
@@ -1187,7 +824,6 @@ contract V3Utils is Swapper, IERC721Receiver {
         }
     }
 
-    // decreases liquidity from uniswap v3 position
     function _decreaseLiquidity(
         uint256 tokenId,
         uint128 liquidity,
@@ -1208,7 +844,6 @@ contract V3Utils is Swapper, IERC721Receiver {
         }
     }
 
-    // collects specified amount of fees from uniswap v3 position
     function _collectFees(
         uint256 tokenId,
         IERC20 token0,
@@ -1218,6 +853,7 @@ contract V3Utils is Swapper, IERC721Receiver {
     ) internal returns (uint256 amount0, uint256 amount1) {
         uint256 balanceBefore0 = token0.balanceOf(address(this));
         uint256 balanceBefore1 = token1.balanceOf(address(this));
+
         (amount0, amount1) = nonfungiblePositionManager.collect(
             INonfungiblePositionManager.CollectParams(
                 tokenId,
@@ -1229,8 +865,6 @@ contract V3Utils is Swapper, IERC721Receiver {
         uint256 balanceAfter0 = token0.balanceOf(address(this));
         uint256 balanceAfter1 = token1.balanceOf(address(this));
 
-        // reverts for fee-on-transfer tokens
-        // q can this led to locked funds?
         if (balanceAfter0 - balanceBefore0 != amount0) {
             revert CollectError();
         }
@@ -1239,7 +873,6 @@ contract V3Utils is Swapper, IERC721Receiver {
         }
     }
 
-    // needed for WETH unwrapping
     receive() external payable {
         if (msg.sender != address(weth)) {
             revert NotWETH();

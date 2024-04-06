@@ -77,6 +77,7 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
         address _chainlinkReferenceToken
     ) {
         nonfungiblePositionManager = _nonfungiblePositionManager;
+        //@audit low
         factory = _nonfungiblePositionManager.factory();
         referenceToken = _referenceToken;
         referenceTokenDecimals = IERC20Metadata(_referenceToken).decimals();
@@ -92,21 +93,47 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
     /// @return feeValue value of positions fees only at current prices
     /// @return price0X96 price of token0
     /// @return price1X96 price of token1
-    function getValue(uint256 tokenId, address token)
+    function getValue(
+        uint256 tokenId,
+        address token
+    )
         external
         view
         override
-        returns (uint256 value, uint256 feeValue, uint256 price0X96, uint256 price1X96)
+        returns (
+            uint256 value,
+            uint256 feeValue,
+            uint256 price0X96,
+            uint256 price1X96
+        )
     {
-        (address token0, address token1, uint24 fee,, uint256 amount0, uint256 amount1, uint256 fees0, uint256 fees1) =
-            getPositionBreakdown(tokenId);
+        (
+            address token0,
+            address token1,
+            uint24 fee,
+            ,
+            uint256 amount0,
+            uint256 amount1,
+            uint256 fees0,
+            uint256 fees1
+        ) = getPositionBreakdown(tokenId);
 
         uint256 cachedChainlinkReferencePriceX96;
 
-        (price0X96, cachedChainlinkReferencePriceX96) =
-            _getReferenceTokenPriceX96(token0, cachedChainlinkReferencePriceX96);
-        (price1X96, cachedChainlinkReferencePriceX96) =
-            _getReferenceTokenPriceX96(token1, cachedChainlinkReferencePriceX96);
+        (
+            price0X96,
+            cachedChainlinkReferencePriceX96
+        ) = _getReferenceTokenPriceX96(
+            token0,
+            cachedChainlinkReferencePriceX96
+        );
+        (
+            price1X96,
+            cachedChainlinkReferencePriceX96
+        ) = _getReferenceTokenPriceX96(
+            token1,
+            cachedChainlinkReferencePriceX96
+        );
 
         uint256 priceTokenX96;
         if (token0 == token) {
@@ -114,35 +141,55 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
         } else if (token1 == token) {
             priceTokenX96 = price1X96;
         } else {
-            (priceTokenX96,) = _getReferenceTokenPriceX96(token, cachedChainlinkReferencePriceX96);
+            (priceTokenX96, ) = _getReferenceTokenPriceX96(
+                token,
+                cachedChainlinkReferencePriceX96
+            );
         }
 
-        value = (price0X96 * (amount0 + fees0) / Q96 + price1X96 * (amount1 + fees1) / Q96) * Q96 / priceTokenX96;
-        feeValue = (price0X96 * fees0 / Q96 + price1X96 * fees1 / Q96) * Q96 / priceTokenX96;
-        price0X96 = price0X96 * Q96 / priceTokenX96;
-        price1X96 = price1X96 * Q96 / priceTokenX96;
+        value =
+            (((price0X96 * (amount0 + fees0)) /
+                Q96 +
+                (price1X96 * (amount1 + fees1)) /
+                Q96) * Q96) /
+            priceTokenX96;
+        feeValue =
+            (((price0X96 * fees0) / Q96 + (price1X96 * fees1) / Q96) * Q96) /
+            priceTokenX96;
+        price0X96 = (price0X96 * Q96) / priceTokenX96;
+        price1X96 = (price1X96 * Q96) / priceTokenX96;
 
         // checks derived pool price for price manipulation attacks
         // this prevents manipulations of pool to get distorted proportions of collateral tokens - for borrowing
         // when a pool is in this state, liquidations will be disabled - but arbitrageurs (or liquidator himself)
         // will move price back to reasonable range and enable liquidation
-        uint256 derivedPoolPriceX96 = price0X96 * Q96 / price1X96;
+        uint256 derivedPoolPriceX96 = (price0X96 * Q96) / price1X96;
         _checkPoolPrice(token0, token1, fee, derivedPoolPriceX96);
     }
 
-    function _checkPoolPrice(address token0, address token1, uint24 fee, uint256 derivedPoolPriceX96) internal view {
+    function _checkPoolPrice(
+        address token0,
+        address token1,
+        uint24 fee,
+        uint256 derivedPoolPriceX96
+    ) internal view {
         IUniswapV3Pool pool = _getPool(token0, token1, fee);
         uint256 priceX96 = _getReferencePoolPriceX96(pool, 0);
-        _requireMaxDifference(priceX96, derivedPoolPriceX96, maxPoolPriceDifference);
+        _requireMaxDifference(
+            priceX96,
+            derivedPoolPriceX96,
+            maxPoolPriceDifference
+        );
     }
 
-    function _requireMaxDifference(uint256 priceX96, uint256 verifyPriceX96, uint256 maxDifferenceX10000)
-        internal
-        pure
-    {
+    function _requireMaxDifference(
+        uint256 priceX96,
+        uint256 verifyPriceX96,
+        uint256 maxDifferenceX10000
+    ) internal pure {
         uint256 differenceX10000 = priceX96 > verifyPriceX96
-            ? (priceX96 - verifyPriceX96) * 10000 / priceX96
-            : (verifyPriceX96 - priceX96) * 10000 / verifyPriceX96;
+            ? ((priceX96 - verifyPriceX96) * 10000) / priceX96
+            : ((verifyPriceX96 - priceX96) * 10000) / verifyPriceX96;
         // if too big difference - revert
         if (differenceX10000 >= maxDifferenceX10000) {
             revert PriceDifferenceExceeded();
@@ -159,7 +206,9 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
     /// @return amount1 current amount token1
     /// @return fees0 current token0 fees of position
     /// @return fees1 current token1 fees of position
-    function getPositionBreakdown(uint256 tokenId)
+    function getPositionBreakdown(
+        uint256 tokenId
+    )
         public
         view
         override
@@ -182,7 +231,9 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
 
     /// @notice Sets the max pool difference parameter (onlyOwner)
     /// @param _maxPoolPriceDifference Set max allowable difference between pool price and derived oracle pool price
-    function setMaxPoolPriceDifference(uint16 _maxPoolPriceDifference) external onlyOwner {
+    function setMaxPoolPriceDifference(
+        uint16 _maxPoolPriceDifference
+    ) external onlyOwner {
         if (_maxPoolPriceDifference < MIN_PRICE_DIFFERENCE) {
             revert InvalidConfig();
         }
@@ -224,16 +275,35 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
 
             address token0 = pool.token0();
             address token1 = pool.token1();
-            if (!(token0 == token && token1 == referenceToken || token0 == referenceToken && token1 == token)) {
+            if (
+                !((token0 == token && token1 == referenceToken) ||
+                    (token0 == referenceToken && token1 == token))
+            ) {
                 revert InvalidPool();
             }
             bool isToken0 = token0 == token;
             config = TokenConfig(
-                feed, maxFeedAge, feedDecimals, tokenDecimals, pool, isToken0, twapSeconds, mode, maxDifference
+                feed,
+                maxFeedAge,
+                feedDecimals,
+                tokenDecimals,
+                pool,
+                isToken0,
+                twapSeconds,
+                mode,
+                maxDifference
             );
         } else {
             config = TokenConfig(
-                feed, maxFeedAge, feedDecimals, tokenDecimals, IUniswapV3Pool(address(0)), false, 0, Mode.CHAINLINK, 0
+                feed,
+                maxFeedAge,
+                feedDecimals,
+                tokenDecimals,
+                IUniswapV3Pool(address(0)),
+                false,
+                0,
+                Mode.CHAINLINK,
+                0
             );
         }
 
@@ -269,7 +339,10 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
 
     // Returns the price for a token using the selected oracle mode given as reference token value
     // The price is calculated using Chainlink, Uniswap v3 TWAP, or both based on the mode
-    function _getReferenceTokenPriceX96(address token, uint256 cachedChainlinkReferencePriceX96)
+    function _getReferenceTokenPriceX96(
+        address token,
+        uint256 cachedChainlinkReferencePriceX96
+    )
         internal
         view
         returns (uint256 priceX96, uint256 chainlinkReferencePriceX96)
@@ -286,14 +359,12 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
 
         uint256 verifyPriceX96;
 
-        bool usesChainlink = (
-            feedConfig.mode == Mode.CHAINLINK_TWAP_VERIFY || feedConfig.mode == Mode.TWAP_CHAINLINK_VERIFY
-                || feedConfig.mode == Mode.CHAINLINK
-        );
-        bool usesTWAP = (
-            feedConfig.mode == Mode.CHAINLINK_TWAP_VERIFY || feedConfig.mode == Mode.TWAP_CHAINLINK_VERIFY
-                || feedConfig.mode == Mode.TWAP
-        );
+        bool usesChainlink = (feedConfig.mode == Mode.CHAINLINK_TWAP_VERIFY ||
+            feedConfig.mode == Mode.TWAP_CHAINLINK_VERIFY ||
+            feedConfig.mode == Mode.CHAINLINK);
+        bool usesTWAP = (feedConfig.mode == Mode.CHAINLINK_TWAP_VERIFY ||
+            feedConfig.mode == Mode.TWAP_CHAINLINK_VERIFY ||
+            feedConfig.mode == Mode.TWAP);
 
         if (usesChainlink) {
             uint256 chainlinkPriceX96 = _getChainlinkPriceX96(token);
@@ -301,8 +372,10 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
                 ? _getChainlinkPriceX96(referenceToken)
                 : cachedChainlinkReferencePriceX96;
 
-            chainlinkPriceX96 = (10 ** referenceTokenDecimals) * chainlinkPriceX96 * Q96 / chainlinkReferencePriceX96
-                / (10 ** feedConfig.tokenDecimals);
+            chainlinkPriceX96 =
+                ((10 ** referenceTokenDecimals) * chainlinkPriceX96 * Q96) /
+                chainlinkReferencePriceX96 /
+                (10 ** feedConfig.tokenDecimals);
 
             if (feedConfig.mode == Mode.TWAP_CHAINLINK_VERIFY) {
                 verifyPriceX96 = chainlinkPriceX96;
@@ -320,13 +393,22 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
             }
         }
 
-        if (feedConfig.mode == Mode.CHAINLINK_TWAP_VERIFY || feedConfig.mode == Mode.TWAP_CHAINLINK_VERIFY) {
-            _requireMaxDifference(priceX96, verifyPriceX96, feedConfig.maxDifference);
+        if (
+            feedConfig.mode == Mode.CHAINLINK_TWAP_VERIFY ||
+            feedConfig.mode == Mode.TWAP_CHAINLINK_VERIFY
+        ) {
+            _requireMaxDifference(
+                priceX96,
+                verifyPriceX96,
+                feedConfig.maxDifference
+            );
         }
     }
 
     // calculates chainlink price given feedConfig
-    function _getChainlinkPriceX96(address token) internal view returns (uint256) {
+    function _getChainlinkPriceX96(
+        address token
+    ) internal view returns (uint256) {
         if (token == chainlinkReferenceToken) {
             return Q96;
         }
@@ -334,39 +416,52 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
         TokenConfig memory feedConfig = feedConfigs[token];
 
         // if stale data - revert
-        (, int256 answer,, uint256 updatedAt,) = feedConfig.feed.latestRoundData();
+        (, int256 answer, , uint256 updatedAt, ) = feedConfig
+            .feed
+            .latestRoundData();
         if (updatedAt + feedConfig.maxFeedAge < block.timestamp || answer < 0) {
             revert ChainlinkPriceError();
         }
 
-        return uint256(answer) * Q96 / (10 ** feedConfig.feedDecimals);
+        return (uint256(answer) * Q96) / (10 ** feedConfig.feedDecimals);
     }
 
     // calculates TWAP price given feedConfig
-    function _getTWAPPriceX96(TokenConfig memory feedConfig) internal view returns (uint256 poolTWAPPriceX96) {
+    function _getTWAPPriceX96(
+        TokenConfig memory feedConfig
+    ) internal view returns (uint256 poolTWAPPriceX96) {
         // get reference pool price
-        uint256 priceX96 = _getReferencePoolPriceX96(feedConfig.pool, feedConfig.twapSeconds);
+        uint256 priceX96 = _getReferencePoolPriceX96(
+            feedConfig.pool,
+            feedConfig.twapSeconds
+        );
 
         if (feedConfig.isToken0) {
             poolTWAPPriceX96 = priceX96;
         } else {
-            poolTWAPPriceX96 = Q96 * Q96 / priceX96;
+            poolTWAPPriceX96 = (Q96 * Q96) / priceX96;
         }
     }
 
     // Calculates the reference pool price with scaling factor of 2^96
     // It uses either the latest slot price or TWAP based on twapSeconds
-    function _getReferencePoolPriceX96(IUniswapV3Pool pool, uint32 twapSeconds) internal view returns (uint256) {
+    function _getReferencePoolPriceX96(
+        IUniswapV3Pool pool,
+        uint32 twapSeconds
+    ) internal view returns (uint256) {
         uint160 sqrtPriceX96;
         // if twap seconds set to 0 just use pool price
         if (twapSeconds == 0) {
-            (sqrtPriceX96,,,,,,) = pool.slot0();
+            (sqrtPriceX96, , , , , , ) = pool.slot0();
         } else {
             uint32[] memory secondsAgos = new uint32[](2);
             secondsAgos[0] = 0; // from (before)
             secondsAgos[1] = twapSeconds; // from (before)
-            (int56[] memory tickCumulatives,) = pool.observe(secondsAgos); // pool observe may fail when there is not enough history available (only use pool with enough history!)
-            int24 tick = int24((tickCumulatives[0] - tickCumulatives[1]) / int56(uint56(twapSeconds)));
+            (int56[] memory tickCumulatives, ) = pool.observe(secondsAgos); // pool observe may fail when there is not enough history available (only use pool with enough history!)
+            int24 tick = int24(
+                (tickCumulatives[0] - tickCumulatives[1]) /
+                    int56(uint56(twapSeconds))
+            );
             sqrtPriceX96 = TickMath.getSqrtRatioAtTick(tick);
         }
 
@@ -392,7 +487,9 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
         uint160 sqrtPriceX96Upper;
     }
 
-    function _initializeState(uint256 tokenId) internal view returns (PositionState memory state) {
+    function _initializeState(
+        uint256 tokenId
+    ) internal view returns (PositionState memory state) {
         (
             ,
             ,
@@ -419,20 +516,29 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
         state.tokensOwed0 = tokensOwed0;
         state.tokensOwed1 = tokensOwed1;
         state.pool = _getPool(token0, token1, fee);
-        (state.sqrtPriceX96, state.tick,,,,,) = state.pool.slot0();
+        (state.sqrtPriceX96, state.tick, , , , , ) = state.pool.slot0();
     }
 
     // calculate position amounts given current price/tick
-    function _getAmounts(PositionState memory state)
+    function _getAmounts(
+        PositionState memory state
+    )
         internal
         view
         returns (uint256 amount0, uint256 amount1, uint128 fees0, uint128 fees1)
     {
         if (state.liquidity > 0) {
-            state.sqrtPriceX96Lower = TickMath.getSqrtRatioAtTick(state.tickLower);
-            state.sqrtPriceX96Upper = TickMath.getSqrtRatioAtTick(state.tickUpper);
+            state.sqrtPriceX96Lower = TickMath.getSqrtRatioAtTick(
+                state.tickLower
+            );
+            state.sqrtPriceX96Upper = TickMath.getSqrtRatioAtTick(
+                state.tickUpper
+            );
             (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
-                state.sqrtPriceX96, state.sqrtPriceX96Lower, state.sqrtPriceX96Upper, state.liquidity
+                state.sqrtPriceX96,
+                state.sqrtPriceX96Lower,
+                state.sqrtPriceX96Upper,
+                state.liquidity
             );
         }
 
@@ -442,26 +548,32 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
     }
 
     // calculate uncollected fees
-    function _getUncollectedFees(PositionState memory position, int24 tick)
-        internal
-        view
-        returns (uint128 fees0, uint128 fees1)
-    {
-        (uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128) = _getFeeGrowthInside(
-            position.pool,
-            position.tickLower,
-            position.tickUpper,
-            tick,
-            position.pool.feeGrowthGlobal0X128(),
-            position.pool.feeGrowthGlobal1X128()
-        );
+    function _getUncollectedFees(
+        PositionState memory position,
+        int24 tick
+    ) internal view returns (uint128 fees0, uint128 fees1) {
+        (
+            uint256 feeGrowthInside0LastX128,
+            uint256 feeGrowthInside1LastX128
+        ) = _getFeeGrowthInside(
+                position.pool,
+                position.tickLower,
+                position.tickUpper,
+                tick,
+                position.pool.feeGrowthGlobal0X128(),
+                position.pool.feeGrowthGlobal1X128()
+            );
 
         // allow overflow - this is as designed by uniswap - see PositionValue library (for solidity < 0.8)
         uint256 feeGrowth0;
         uint256 feeGrowth1;
         unchecked {
-            feeGrowth0 = feeGrowthInside0LastX128 - position.feeGrowthInside0LastX128;
-            feeGrowth1 = feeGrowthInside1LastX128 - position.feeGrowthInside1LastX128;
+            feeGrowth0 =
+                feeGrowthInside0LastX128 -
+                position.feeGrowthInside0LastX128;
+            feeGrowth1 =
+                feeGrowthInside1LastX128 -
+                position.feeGrowthInside1LastX128;
         }
 
         fees0 = uint128(FullMath.mulDiv(feeGrowth0, position.liquidity, Q128));
@@ -476,27 +588,73 @@ contract V3Oracle is IV3Oracle, Ownable, IErrors {
         int24 tickCurrent,
         uint256 feeGrowthGlobal0X128,
         uint256 feeGrowthGlobal1X128
-    ) internal view returns (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) {
-        (,, uint256 lowerFeeGrowthOutside0X128, uint256 lowerFeeGrowthOutside1X128,,,,) = pool.ticks(tickLower);
-        (,, uint256 upperFeeGrowthOutside0X128, uint256 upperFeeGrowthOutside1X128,,,,) = pool.ticks(tickUpper);
+    )
+        internal
+        view
+        returns (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128)
+    {
+        (
+            ,
+            ,
+            uint256 lowerFeeGrowthOutside0X128,
+            uint256 lowerFeeGrowthOutside1X128,
+            ,
+            ,
+            ,
+
+        ) = pool.ticks(tickLower);
+        (
+            ,
+            ,
+            uint256 upperFeeGrowthOutside0X128,
+            uint256 upperFeeGrowthOutside1X128,
+            ,
+            ,
+            ,
+
+        ) = pool.ticks(tickUpper);
 
         // allow overflow - this is as designed by uniswap - see PositionValue library (for solidity < 0.8)
         unchecked {
             if (tickCurrent < tickLower) {
-                feeGrowthInside0X128 = lowerFeeGrowthOutside0X128 - upperFeeGrowthOutside0X128;
-                feeGrowthInside1X128 = lowerFeeGrowthOutside1X128 - upperFeeGrowthOutside1X128;
+                feeGrowthInside0X128 =
+                    lowerFeeGrowthOutside0X128 -
+                    upperFeeGrowthOutside0X128;
+                feeGrowthInside1X128 =
+                    lowerFeeGrowthOutside1X128 -
+                    upperFeeGrowthOutside1X128;
             } else if (tickCurrent < tickUpper) {
-                feeGrowthInside0X128 = feeGrowthGlobal0X128 - lowerFeeGrowthOutside0X128 - upperFeeGrowthOutside0X128;
-                feeGrowthInside1X128 = feeGrowthGlobal1X128 - lowerFeeGrowthOutside1X128 - upperFeeGrowthOutside1X128;
+                feeGrowthInside0X128 =
+                    feeGrowthGlobal0X128 -
+                    lowerFeeGrowthOutside0X128 -
+                    upperFeeGrowthOutside0X128;
+                feeGrowthInside1X128 =
+                    feeGrowthGlobal1X128 -
+                    lowerFeeGrowthOutside1X128 -
+                    upperFeeGrowthOutside1X128;
             } else {
-                feeGrowthInside0X128 = upperFeeGrowthOutside0X128 - lowerFeeGrowthOutside0X128;
-                feeGrowthInside1X128 = upperFeeGrowthOutside1X128 - lowerFeeGrowthOutside1X128;
+                feeGrowthInside0X128 =
+                    upperFeeGrowthOutside0X128 -
+                    lowerFeeGrowthOutside0X128;
+                feeGrowthInside1X128 =
+                    upperFeeGrowthOutside1X128 -
+                    lowerFeeGrowthOutside1X128;
             }
         }
     }
 
     // helper method to get pool for token
-    function _getPool(address tokenA, address tokenB, uint24 fee) internal view returns (IUniswapV3Pool) {
-        return IUniswapV3Pool(PoolAddress.computeAddress(factory, PoolAddress.getPoolKey(tokenA, tokenB, fee)));
+    function _getPool(
+        address tokenA,
+        address tokenB,
+        uint24 fee
+    ) internal view returns (IUniswapV3Pool) {
+        return
+            IUniswapV3Pool(
+                PoolAddress.computeAddress(
+                    factory,
+                    PoolAddress.getPoolKey(tokenA, tokenB, fee)
+                )
+            );
     }
 }

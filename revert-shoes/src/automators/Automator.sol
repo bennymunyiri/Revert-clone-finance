@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-// @audit aderyn.
+// written aderyn.
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -29,7 +29,7 @@ abstract contract Automator is Swapper, Ownable {
     event VaultChanged(address newVault, bool active);
 
     event WithdrawerChanged(address newWithdrawer);
-    //@audit-info this should be indexed
+    //@written this should be indexed
     event TWAPConfigChanged(uint32 TWAPSeconds, uint16 maxTWAPTickDifference);
 
     // configurable by owner
@@ -61,7 +61,7 @@ abstract contract Automator is Swapper, Ownable {
      * @param _withdrawer withdrawer
      */
     //does this follow cei
-    // q what if its address 0.
+    //  what if its address 0.
     function setWithdrawer(address _withdrawer) public onlyOwner {
         emit WithdrawerChanged(_withdrawer);
         withdrawer = _withdrawer;
@@ -292,7 +292,7 @@ abstract contract Automator is Swapper, Ownable {
         );
 
         // fee amount is what was collected additionally to liquidity amount
-        // q is this where the this contract collects the money -> the amount of fees accrued by holding this position.
+        // q is this where the this contract collects the money
         // q what is returned this first variable or after minusing  follow-up which one is returned the first variable or this one. -> this one
         feeAmount0 = amount0 - feeAmount0;
         feeAmount1 = amount1 - feeAmount1;
